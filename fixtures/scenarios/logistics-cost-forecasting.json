@@ -1,0 +1,29 @@
+{
+  "id": "logistics-cost-forecasting",
+  "name": "Logistics Cost Forecasting",
+  "summary": "A forecasting business helps logistics operators predict quarterly tariff and fuel costs, with a possible vertical focus on rare earth and critical mineral transporters that face volatile trade policy and energy inputs.",
+  "geography": "United States",
+  "businessModel": "B2B forecasting software and advisory services",
+  "customers": [
+    "freight and logistics operators",
+    "rare earth and critical mineral transporters",
+    "supply-chain operators exposed to tariff volatility"
+  ],
+  "needs": [
+    "fund product development for tariff and fuel forecasting",
+    "find commercialization, pilot, and adoption funding tied to freight and supply-chain resilience",
+    "identify critical-mineral and energy-transition funding where the niche focus improves fit",
+    "find non-dilutive and adjacent funding sources that fit logistics analytics"
+  ],
+  "tags": [
+    "logistics",
+    "freight",
+    "supply-chain",
+    "forecasting",
+    "tariffs",
+    "fuel-costs",
+    "critical-minerals",
+    "rare-earth",
+    "energy-transition"
+  ]
+}

@@ -76,6 +76,61 @@ trunk fmt
 7. Refactor while keeping tests green.
 8. Review with `sem diff` and run the required checks.
 
+## Funding Research Agent
+
+This repo now includes a small Bun/TypeScript application that uses the PI agent framework to research grants and adjacent funding sources for a business case.
+
+### Install
+
+```bash
+bun install
+```
+
+### List built-in scenarios
+
+```bash
+bun run research --list
+```
+
+Current fixtures:
+- `inverse-private-equity`
+- `logistics-cost-forecasting`
+
+### Run a scenario
+
+Set provider credentials for a PI-supported model first. By default the CLI uses `openai` with `gpt-4o-mini`.
+
+```bash
+export OPENAI_API_KEY=...
+bun run research --scenario inverse-private-equity
+```
+
+Print raw JSON instead of the formatted report:
+
+```bash
+bun run research --scenario logistics-cost-forecasting --json
+```
+
+Use a custom scenario file:
+
+```bash
+bun run research --scenario-file ./path/to/scenario.json --json
+```
+
+### Environment
+
+- `PI_PROVIDER` selects the provider for `@mariozechner/pi-ai`
+- `PI_MODEL` selects the model for the chosen provider
+- `PI_THINKING_LEVEL` controls reasoning effort: `off|minimal|low|medium|high|xhigh`
+
+### Checks
+
+```bash
+bun test
+bun run typecheck
+bun run build
+```
+
 ## Notes
 
 - This repo prefers **GitButler** over `jj`.

@@ -1,0 +1,28 @@
+{
+  "id": "inverse-private-equity",
+  "name": "Inverse Private Equity Firm",
+  "summary": "A consulting and venture support firm uses process mining to map how small businesses operate, augments those workflows with AI automation, and helps the owner prepare for retirement while creating venture pathways for staff.",
+  "geography": "United States",
+  "businessModel": "B2B professional services with automation advisory and venture incubation",
+  "customers": [
+    "owner-operated small businesses",
+    "staff-led spinout ventures",
+    "companies preparing for succession"
+  ],
+  "needs": [
+    "fund owner succession and transition planning",
+    "fund AI automation and process redesign services",
+    "support workforce upskilling and staff venture formation",
+    "find non-dilutive and adjacent funding sources that fit a services-heavy business"
+  ],
+  "tags": [
+    "succession",
+    "employee-ownership",
+    "process-mining",
+    "automation",
+    "artificial-intelligence",
+    "workforce-development",
+    "small-business",
+    "venture-formation"
+  ]
+}
