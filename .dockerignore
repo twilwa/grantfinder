@@ -1,0 +1,16 @@
+.git
+.gitignore
+.beads
+.codex
+.claude
+.entire
+.mise
+.sisyphus
+.tools
+.trunk
+node_modules
+dist
+scratchpad/*
+openspec
+docs
+*.bak

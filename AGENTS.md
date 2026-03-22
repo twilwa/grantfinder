@@ -150,7 +150,8 @@ Ask the human before:
 
 - Never treat Yolo or Full Yolo as implicit.
 - Never bypass hooks or verification with `--no-verify`.
-- Never use `jj` or `git` workflows in this repository, use only the `but` cli or ask the human to use GitButler for branch management.
+- Never use `jj` or `git` workflows when GitButler is initialized for this repository or when the current branch is `gitbutler/workspace`; use the `but` CLI or ask the human to use GitButler for branch management.
+- Git or `jj` workflows are acceptable only when `but` is not initialized for the repository and the current branch is not `gitbutler/workspace`.
 - Never use plain `grep` or regex-only search as the primary tool for code search when `sg` can do the job.
 - Never claim verification that you did not actually run.
 - Never delete failing tests to make a suite pass.
@@ -214,6 +215,7 @@ Ask the human before:
 - Use for parallel branch orchestration and virtual-branch workflows.
 - Prefer GitButler over `jj` for concurrent variants in this repository. The `but` CLI is your version control entrypoint; the human also has a UI available.
 - In this repo, the trunk branch is always `gitbutler/workspace`, virtual branches will commonly be named t-branch-N. Agents should work on gitbutler/workspace, the virtual branches will be largely managed by the human unless instructed to cherrypick or perform another git op.
+- Closeout in this repository does not require a git-based staging or commit checklist. Verification, `br` state updates, and `br sync --flush-only` are the required handoff steps unless the human explicitly asks for a GitButler or git commit operation.
 
 ### mcphub.nvim (Neovim MCP Client)
 

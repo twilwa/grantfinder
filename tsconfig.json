@@ -5,10 +5,11 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "noEmit": true,
+    "jsx": "react-jsx",
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"]
 }

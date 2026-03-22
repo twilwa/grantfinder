@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/grantfinder
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PI_PROVIDER: ${PI_PROVIDER:-openai}
+      PI_MODEL: ${PI_MODEL:-gpt-4o-mini}
+      PI_THINKING_LEVEL: ${PI_THINKING_LEVEL:-minimal}
+      PRIVY_APP_ID: ${PRIVY_APP_ID:-}
+      PRIVY_APP_SECRET: ${PRIVY_APP_SECRET:-}
+      PRIVY_JWT_VERIFICATION_KEY: ${PRIVY_JWT_VERIFICATION_KEY:-}
+      X402_MODE: ${X402_MODE:-challenge}
+      X402_FACILITATOR_URL: ${X402_FACILITATOR_URL:-https://x402.org/facilitator}
+      X402_NETWORK: ${X402_NETWORK:-eip155:84532}
+      X402_PAY_TO: ${X402_PAY_TO:-0x0000000000000000000000000000000000000000}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: grantfinder
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d grantfinder"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - grantfinder-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  grantfinder-postgres:

@@ -78,7 +78,7 @@ trunk fmt
 
 ## Funding Research Agent
 
-This repo now includes a small Bun/TypeScript application that uses the PI agent framework to research grants and adjacent funding sources for a business case.
+This repo now includes a Bun/TypeScript application that uses the PI agent framework to research grants and adjacent funding sources for a business case, and a Hono-based web platform for hiring and funding specialists to apply for those grants.
 
 ### Install
 
@@ -117,11 +117,163 @@ Use a custom scenario file:
 bun run research --scenario-file ./path/to/scenario.json --json
 ```
 
+## Web Platform
+
+Start the browser, REST, and JSON-RPC application:
+
+```bash
+bun run serve
+```
+
+Default URL:
+
+```text
+http://localhost:3000
+```
+
+Key surfaces:
+
+- `/` browser dashboard for Privy login, wallet provisioning, profile creation, agent-token minting, research, jobs, offers, acceptance, and funding
+- `/health` health endpoint for container platforms
+- `/docs` HTTP usage guide with curl examples
+- `/skill.md` agent-facing markdown discovery document
+- `/api/*` REST endpoints
+- `/rpc` JSON-RPC endpoint
+
+### Runtime environment
+
+```bash
+export OPENAI_API_KEY=...
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/grantfinder
+export PRIVY_APP_ID=...
+export PRIVY_APP_SECRET=...
+# optional when Privy access tokens should be verified against an explicit key
+export PRIVY_JWT_VERIFICATION_KEY=...
+```
+
+### Browser auth and local profile
+
+1. Open `http://localhost:3000`.
+2. Sign in with Privy.
+3. Create an embedded wallet if the user does not have one yet.
+4. Complete the Grantfinder profile as a `requester` or `specialist`.
+5. Mint an agent token for CLI, REST, or JSON-RPC access.
+
+### Run research over HTTP
+
+```bash
+curl -s http://localhost:3000/api/research \
+  -H 'Authorization: Bearer <agentToken>' \
+  -H 'content-type: application/json' \
+  -d '{"scenarioId":"inverse-private-equity"}'
+```
+
+### Create a job
+
+```bash
+curl -s http://localhost:3000/api/jobs \
+  -H 'Authorization: Bearer <agentToken>' \
+  -H 'content-type: application/json' \
+  -d '{"title":"Apply for automation grants","description":"Need a specialist to run the process.","fundingNeed":"automation and workforce development"}'
+```
+
+### JSON-RPC example
+
+```bash
+curl -s http://localhost:3000/rpc \
+  -H 'Authorization: Bearer <agentToken>' \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"jobs","method":"jobs.list","params":{}}'
+```
+
+### x402 funding mode
+
+The accepted-offer funding route is `POST /api/engagements/:id/fund`.
+
+By default the app runs in challenge mode and returns an x402-shaped payment challenge with:
+
+- `x-payment-protocol: x402`
+- pay-to address
+- amount
+- facilitator URL
+- network
+
+To switch to live x402 middleware, start the server with:
+
+```bash
+X402_MODE=live \
+X402_FACILITATOR_URL=https://x402.org/facilitator \
+X402_NETWORK=eip155:84532 \
+X402_PAY_TO=0xYourFallbackAddress \
+bun run serve
+```
+
+## Container Deployment
+
+This repo now includes a production container at [Dockerfile](/Users/anon/Projects/grantfinder/Dockerfile).
+
+### One-command local stack
+
+If you want the app plus Postgres in containers, run the compose stack from the
+repo root:
+
+```bash
+docker compose up
+```
+
+This starts:
+
+- `app` on `http://localhost:3000`
+- `postgres` on the internal compose network with a persistent named volume
+  called `grantfinder-postgres`
+
+The stack is ready without extra secrets, but some features stay limited until
+you provide real credentials:
+
+- Without `PRIVY_APP_ID` and `PRIVY_APP_SECRET`, the browser dashboard loads
+  but login stays disabled.
+- Without `OPENAI_API_KEY`, research calls start but the model-backed work
+  cannot complete successfully.
+
+To enable those features, export the variables in your shell or define them in
+your local `.env` file before you run `docker compose up`.
+
+Build and run it locally:
+
+```bash
+docker build -t grantfinder .
+docker run --rm -p 3000:3000 \
+  -e OPENAI_API_KEY=... \
+  -e DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5432/grantfinder \
+  -e PRIVY_APP_ID=... \
+  -e PRIVY_APP_SECRET=... \
+  grantfinder
+```
+
+Quick smoke test:
+
+```bash
+curl -fsS http://localhost:3000/health
+curl -fsS http://localhost:3000/skill.md | head
+```
+
+For Coolify, use the `Dockerfile` build pack, port `3000`, and provide a reachable Postgres instance plus Privy credentials through environment variables.
+
 ### Environment
 
 - `PI_PROVIDER` selects the provider for `@mariozechner/pi-ai`
 - `PI_MODEL` selects the model for the chosen provider
 - `PI_THINKING_LEVEL` controls reasoning effort: `off|minimal|low|medium|high|xhigh`
+- `OPENAI_API_KEY` authenticates the default PI model provider used by the research agent
+- `PORT` overrides the web server port
+- `DATABASE_URL` points the application at Postgres for durable marketplace state
+- `PRIVY_APP_ID` enables browser login through Privy
+- `PRIVY_APP_SECRET` lets the server verify Privy access tokens
+- `PRIVY_JWT_VERIFICATION_KEY` optionally pins verification to an explicit JWT key
+- `X402_MODE` selects `challenge` or `live` funding behavior
+- `X402_FACILITATOR_URL` points the x402 middleware at a facilitator
+- `X402_NETWORK` selects the target chain in CAIP-2 form such as `eip155:84532`
+- `X402_PAY_TO` provides the fallback pay-to address used when an engagement lacks a payout address
 
 ### Checks
 

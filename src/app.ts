@@ -1,0 +1,952 @@
+// ABOUTME: Builds the Hono application for browser, REST, JSON-RPC, and x402 funding workflows.
+// ABOUTME: The same application shell serves human-facing pages and agent-friendly HTTP interfaces.
+
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+
+import { PrivyAuthProvider, type BrowserAuthProvider } from "./auth.js";
+import {
+  ApplicationServices,
+  AppError,
+  type FundingResearchRunner,
+  type FundingResearchSessionFactory,
+} from "./services.js";
+import { ApplicationStore, type ApplicationStoreOptions } from "./store.js";
+import type { BrowserClientConfig, FundingChallenge, X402Settings } from "./platform-types.js";
+
+export interface AppOptions extends ApplicationStoreOptions {
+  authProvider?: BrowserAuthProvider;
+  researchRunner?: FundingResearchRunner;
+  researchSessionFactory?: FundingResearchSessionFactory | null;
+  x402?: Partial<X402Settings>;
+}
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: string | number | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+const clientBundlePath = fileURLToPath(new URL("../dist/public/client.js", import.meta.url));
+let clientBundlePromise: Promise<void> | null = null;
+
+function resolveX402Settings(override: Partial<X402Settings> | undefined): X402Settings {
+  const envMode = process.env.X402_MODE;
+  const mode = override?.mode ?? (envMode === "live" ? "live" : "challenge");
+  const network =
+    override?.network ??
+    ((process.env.X402_NETWORK as `${string}:${string}` | undefined) ?? "eip155:84532");
+  return {
+    mode,
+    facilitatorUrl:
+      override?.facilitatorUrl ?? process.env.X402_FACILITATOR_URL ?? "https://x402.org/facilitator",
+    network,
+    payTo:
+      override?.payTo ??
+      process.env.X402_PAY_TO ??
+      "0x0000000000000000000000000000000000000000",
+  };
+}
+
+function resolveAuthProvider(override: BrowserAuthProvider | undefined): BrowserAuthProvider | undefined {
+  if (override) {
+    return override;
+  }
+
+  const appId = process.env.PRIVY_APP_ID;
+  const appSecret = process.env.PRIVY_APP_SECRET;
+  if (!appId || !appSecret) {
+    return undefined;
+  }
+
+  return new PrivyAuthProvider({
+    appId,
+    appSecret,
+    jwtVerificationKey: process.env.PRIVY_JWT_VERIFICATION_KEY,
+  });
+}
+
+function parseAuthorizationHeader(header: string | undefined): string | null {
+  if (!header) {
+    return null;
+  }
+
+  const [scheme, token] = header.split(/\s+/u);
+  if (scheme?.toLowerCase() !== "bearer" || !token) {
+    return null;
+  }
+
+  return token;
+}
+
+function extractFundingEngagementId(path: string): string {
+  const match = path.match(/^\/api\/engagements\/([^/]+)\/fund$/u);
+  if (!match) {
+    throw new AppError(400, "invalid_path", "The funding route path is not valid.");
+  }
+
+  return match[1];
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function escapeInlineScriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+function pageShell(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        --bg: #f5f1e8;
+        --panel: rgba(255, 252, 247, 0.92);
+        --ink: #1f2a1f;
+        --muted: #566154;
+        --line: #d8ccb8;
+        --accent: #24543a;
+        --accent-soft: #d7e5d8;
+        --warning: #8c5b1f;
+        --warning-soft: #f4e1c8;
+        --error: #8f2d1f;
+        --error-soft: #f4d6d1;
+        --success: #1f5b38;
+        --success-soft: #d6e7db;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(36, 84, 58, 0.14), transparent 34%),
+          radial-gradient(circle at top right, rgba(140, 91, 31, 0.14), transparent 28%),
+          linear-gradient(180deg, #f8f4ec 0%, var(--bg) 100%);
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+      }
+
+      a { color: var(--accent); }
+      code, pre {
+        font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+      }
+
+      .page {
+        width: min(1180px, calc(100vw - 2rem));
+        margin: 0 auto;
+        padding: 2rem 0 4rem;
+      }
+
+      .panel {
+        background: var(--panel);
+        backdrop-filter: blur(14px);
+        border: 1px solid rgba(255, 255, 255, 0.52);
+        border-radius: 20px;
+        box-shadow: 0 20px 45px rgba(50, 45, 30, 0.08);
+        overflow: hidden;
+      }
+
+      .hero {
+        padding: 2rem;
+        border-bottom: 1px solid rgba(255,255,255,0.45);
+      }
+
+      .eyebrow {
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+
+      h1, h2, h3 {
+        margin: 0 0 0.75rem;
+        line-height: 1.08;
+      }
+
+      h1 { font-size: clamp(2.2rem, 4vw, 4rem); max-width: 13ch; }
+      h2 { font-size: 1.5rem; }
+      p { margin: 0 0 1rem; line-height: 1.55; }
+
+      .lede {
+        max-width: 58ch;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .section {
+        padding: 1.35rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .section:first-child {
+        border-top: 0;
+      }
+
+      .nav {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin: 1rem 0 0;
+      }
+
+      .nav a {
+        text-decoration: none;
+        padding: 0.45rem 0.75rem;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.65);
+        border: 1px solid rgba(216, 204, 184, 0.95);
+      }
+
+      .grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .grid.panels {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        margin-top: 1rem;
+      }
+
+      pre {
+        margin: 0;
+        padding: 0.95rem;
+        background: rgba(31, 42, 31, 0.92);
+        color: #f3f0e8;
+        border-radius: 16px;
+        overflow: auto;
+      }
+
+      ol, ul {
+        margin: 0;
+        padding-left: 1.2rem;
+      }
+
+      @media (max-width: 720px) {
+        .page {
+          width: min(100vw, calc(100vw - 1rem));
+        }
+
+        .hero,
+        .section {
+          padding: 1.2rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      ${body}
+    </main>
+  </body>
+</html>`;
+}
+
+function renderAppShell(config: BrowserClientConfig): string {
+  const serializedConfig = escapeInlineScriptJson(config);
+
+  return pageShell(
+    "Grantfinder",
+    `<section class="panel hero">
+        <div class="eyebrow">Grantfinder Marketplace</div>
+        <h1>Research grants, hire a specialist, fund the work over x402.</h1>
+        <p class="lede">
+          Humans sign in with Privy, receive embedded and smart wallets, and can mint agent tokens for curl or JSON-RPC workflows.
+          The browser dashboard and the HTTP interfaces stay aligned on the same marketplace logic.
+        </p>
+        <nav class="nav" aria-label="Primary">
+          <a href="/">Dashboard</a>
+          <a href="/docs">Docs</a>
+          <a href="/skill.md">skill.md</a>
+        </nav>
+      </section>
+      <section class="panel section">
+        <div id="app"></div>
+      </section>
+      <script>window.__GRANTFINDER_CONFIG__ = ${serializedConfig};</script>
+      <script type="module" src="/assets/client.js"></script>`,
+  );
+}
+
+function renderDocsPage(baseUrl: string, x402: X402Settings, clientConfig: BrowserClientConfig): string {
+  return pageShell(
+    "Grantfinder Docs",
+    `<section class="panel hero">
+        <div class="eyebrow">HTTP Documentation</div>
+        <h1>Grantfinder docs</h1>
+        <p class="lede">
+          Browser users authenticate with Privy. Headless clients should mint an agent token and then use it as a bearer token over REST or JSON-RPC.
+        </p>
+        <nav class="nav" aria-label="Primary">
+          <a href="/">Dashboard</a>
+          <a href="/docs">Docs</a>
+          <a href="/skill.md">skill.md</a>
+        </nav>
+      </section>
+
+      <section class="grid panels">
+        <section class="panel">
+          <div class="section">
+            <h2>Start the app</h2>
+            <pre>bun install
+export DATABASE_URL=postgres://...
+export PRIVY_APP_ID=...
+export PRIVY_APP_SECRET=...
+bun run serve</pre>
+            <p>The browser dashboard lives at <code>${escapeHtml(baseUrl)}/</code>. The current client shell sees Privy as <code>${escapeHtml(clientConfig.privyAppId ?? "not configured")}</code>.</p>
+          </div>
+          <div class="section">
+            <h2>Browser auth</h2>
+            <ol>
+              <li>Sign in from the dashboard with Privy.</li>
+              <li>Complete the Grantfinder profile by choosing requester or specialist.</li>
+              <li>Mint an agent token if you need curl or JSON-RPC access.</li>
+            </ol>
+          </div>
+          <div class="section">
+            <h2>Create an agent token</h2>
+            <pre>curl -s ${escapeHtml(baseUrl)}/api/auth/tokens \\
+  -H 'Authorization: Bearer &lt;privyAccessToken&gt;' \\
+  -H 'content-type: application/json' \\
+  -d '{"label":"cli"}'</pre>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section">
+            <h2>Research workflow</h2>
+            <pre>curl -s ${escapeHtml(baseUrl)}/api/research \\
+  -H 'Authorization: Bearer &lt;agentToken&gt;' \\
+  -H 'content-type: application/json' \\
+  -d '{"scenarioId":"inverse-private-equity"}'</pre>
+            <p>Create a durable request by saving a custom scenario, creating a request, and then running that request so tracked grants appear in the workspace. The request detail view now keeps a live activity timeline and accepts steering notes during an active run.</p>
+            <pre>curl -s ${escapeHtml(baseUrl)}/api/research/scenarios \\
+  -H 'Authorization: Bearer &lt;agentToken&gt;' \\
+  -H 'content-type: application/json' \\
+  -d '{"name":"Warehouse robotics","summary":"Grant support for robotics rollout","geography":"United States","businessModel":"B2B logistics","customers":["regional manufacturers"],"needs":["warehouse automation"],"tags":["automation"]}'</pre>
+          </div>
+          <div class="section">
+            <h2>Marketplace flow</h2>
+            <ol>
+              <li>Create a job as a requester via <code>POST /api/jobs</code>.</li>
+              <li>Or promote a tracked grant via <code>POST /api/grants/:id/proposal-job</code>.</li>
+              <li>Submit an offer as a specialist via <code>POST /api/jobs/:id/offers</code>.</li>
+              <li>Accept the offer as the requester via <code>POST /api/offers/:id/accept</code>.</li>
+              <li>Fund the engagement via <code>POST /api/engagements/:id/fund</code>.</li>
+            </ol>
+          </div>
+          <div class="section">
+            <h2>x402 funding</h2>
+            <pre>X402_MODE=${escapeHtml(x402.mode)}
+X402_FACILITATOR_URL=${escapeHtml(x402.facilitatorUrl)}
+X402_NETWORK=${escapeHtml(x402.network)}
+X402_PAY_TO=${escapeHtml(x402.payTo)}</pre>
+          </div>
+          <div class="section">
+            <h2>JSON-RPC</h2>
+            <pre>curl -s ${escapeHtml(baseUrl)}/rpc \\
+  -H 'Authorization: Bearer &lt;agentToken&gt;' \\
+  -H 'content-type: application/json' \\
+  -d '{"jsonrpc":"2.0","id":"jobs","method":"jobs.list","params":{}}'</pre>
+            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
+          </div>
+        </section>
+      </section>`,
+  );
+}
+
+function buildSkillDocument(baseUrl: string, x402: X402Settings): string {
+  return `# Grantfinder Skill
+
+Grantfinder exposes grant research and a paid specialist marketplace over browser HTML, REST, and JSON-RPC.
+
+## Base URL
+
+\`${baseUrl}\`
+
+## Auth
+
+- Browser users authenticate with Privy.
+- Headless clients should mint an agent token from \`POST /api/auth/tokens\`.
+- Use \`Authorization: Bearer <agentToken>\` on protected routes.
+
+## REST endpoints
+
+- \`GET /api/auth/session\`
+- \`POST /api/auth/profile\`
+- \`GET /api/auth/tokens\`
+- \`POST /api/auth/tokens\`
+- \`GET /api/workspace\`
+- \`GET /api/research/scenarios\`
+- \`POST /api/research/scenarios\`
+- \`POST /api/research/requests\`
+- \`GET /api/research/requests/:id\`
+- \`POST /api/research/requests/:id/run\`
+- \`POST /api/research/requests/:id/steer\`
+- \`POST /api/research\`
+- \`PATCH /api/grants/:id\`
+- \`POST /api/grants/:id/proposal-job\`
+- \`GET /api/jobs\`
+- \`POST /api/jobs\`
+- \`POST /api/jobs/:id/offers\`
+- \`POST /api/offers/:id/accept\`
+- \`GET /api/engagements/:id\`
+- \`POST /api/engagements/:id/fund\`
+
+## JSON-RPC methods
+
+- \`auth.session\`
+- \`auth.profile.upsert\`
+- \`auth.tokens.list\`
+- \`auth.tokens.create\`
+- \`workspace.get\`
+- \`research.scenarios.list\`
+- \`research.scenarios.create\`
+- \`research.requests.create\`
+- \`research.requests.get\`
+- \`research.requests.run\`
+- \`research.requests.steer\`
+- \`research.run\`
+- \`grants.updateQueue\`
+- \`grants.createProposalJob\`
+- \`jobs.list\`
+- \`jobs.create\`
+- \`offers.create\`
+- \`offers.accept\`
+- \`engagements.get\`
+- \`engagements.fund\`
+
+## x402 funding
+
+- Funding route: \`POST /api/engagements/:id/fund\`
+- Challenge header: \`x-payment-protocol: x402\`
+- Mode: \`${x402.mode}\`
+- Network: \`${x402.network}\`
+- Facilitator: \`${x402.facilitatorUrl}\`
+
+## Browser UI
+
+- Dashboard: \`${baseUrl}/\`
+- Tabs: request marketplace, research dashboard, my requests, my grants
+- Docs: \`${baseUrl}/docs\`
+- Skill markdown: \`${baseUrl}/skill.md\`
+`;
+}
+
+async function parseJson<T>(request: Request): Promise<T> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    throw new AppError(400, "invalid_json", "Request body must be valid JSON.");
+  }
+}
+
+async function ensureClientBundle(): Promise<void> {
+  if (existsSync(clientBundlePath)) {
+    return;
+  }
+
+  if (!clientBundlePromise) {
+    clientBundlePromise = Bun.build({
+      entrypoints: [fileURLToPath(new URL("./client.tsx", import.meta.url))],
+      outdir: fileURLToPath(new URL("../dist/public", import.meta.url)),
+      target: "browser",
+      naming: {
+        entry: "client.js",
+      },
+      minify: false,
+      sourcemap: "linked",
+    }).then((result) => {
+      if (!result.success) {
+        const message = result.logs.map((log) => log.message).join("\n");
+        throw new Error(`Failed to build browser bundle.\n${message}`);
+      }
+    });
+  }
+
+  await clientBundlePromise;
+}
+
+function createLiveFundingMiddleware(services: ApplicationServices, x402: X402Settings) {
+  const facilitator = new HTTPFacilitatorClient({ url: x402.facilitatorUrl });
+  const resourceServer = new x402ResourceServer(facilitator).register(x402.network, new ExactEvmScheme());
+  const middleware = paymentMiddleware(
+    {
+      "POST /api/engagements/:id/fund": {
+        accepts: {
+          scheme: "exact",
+          network: x402.network,
+          payTo: async (context) =>
+            (await services.getFundingChallengeForEngagement(extractFundingEngagementId(context.path), x402)).payTo,
+          price: async (context) => {
+            const challenge = await services.getFundingChallengeForEngagement(
+              extractFundingEngagementId(context.path),
+              x402,
+            );
+            return `$${challenge.amountUsd}`;
+          },
+        },
+        description: "Fund a specialist engagement to prepare and submit grant applications.",
+        mimeType: "application/json",
+        unpaidResponseBody: async (context) => ({
+          contentType: "application/json",
+          body: {
+            paymentRequired: await services.getFundingChallengeForEngagement(
+              extractFundingEngagementId(context.path),
+              x402,
+            ),
+          },
+        }),
+      },
+    },
+    resourceServer,
+    {
+      appName: "Grantfinder",
+      testnet: x402.network !== "eip155:8453",
+    },
+    undefined,
+    false,
+  );
+
+  return async (c: any, next: () => Promise<void>) => {
+    await middleware(c, next);
+    if (c.res.status === 402) {
+      c.header("x-payment-protocol", "x402");
+    }
+  };
+}
+
+export function createApp(options: AppOptions = {}) {
+  const authProvider = resolveAuthProvider(options.authProvider);
+  const store = new ApplicationStore(options);
+  const researchSessionFactory =
+    options.researchSessionFactory === undefined && options.researchRunner
+      ? null
+      : options.researchSessionFactory;
+  const services = new ApplicationServices(
+    store,
+    authProvider,
+    options.researchRunner,
+    researchSessionFactory,
+  );
+  const x402 = resolveX402Settings(options.x402);
+  const clientConfig: BrowserClientConfig = {
+    privyAppId: process.env.PRIVY_APP_ID ?? null,
+    x402Mode: x402.mode,
+  };
+  const app = new Hono();
+
+  app.onError((error, c) => {
+    if (error instanceof HTTPException) {
+      return error.getResponse();
+    }
+
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(500, "internal_error", error instanceof Error ? error.message : "Unexpected error.");
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: appError.code,
+          message: appError.message,
+        },
+      }),
+      {
+        status: appError.status,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  });
+
+  app.get("/", (c) => c.html(renderAppShell(clientConfig)));
+  app.get("/health", (c) => c.json({ status: "ok" }));
+  app.get("/favicon.ico", () => new Response(null, { status: 204 }));
+  app.get("/docs", (c) => c.html(renderDocsPage(new URL(c.req.url).origin, x402, clientConfig)));
+  app.get("/skill.md", (c) => c.text(buildSkillDocument(new URL(c.req.url).origin, x402)));
+  app.get("/assets/client.js", async () => {
+    await ensureClientBundle();
+    return new Response(Bun.file(clientBundlePath), {
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+    });
+  });
+
+  app.get("/api/dashboard", async (c) => c.json(await services.getDashboardData()));
+
+  app.get("/api/auth/session", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    return c.json(await services.getBrowserSession(token));
+  });
+
+  app.post("/api/auth/profile", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    const payload = await parseJson<{
+      name: string;
+      role: "requester" | "specialist";
+      walletAddress?: string | null;
+      smartWalletAddress?: string | null;
+    }>(c.req.raw);
+    return c.json(await services.upsertBrowserProfile(token, payload), 201);
+  });
+
+  app.get("/api/auth/tokens", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listAgentTokens(user));
+  });
+
+  app.post("/api/auth/tokens", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ label?: string }>(c.req.raw);
+    return c.json(await services.createAgentToken(user, payload), 201);
+  });
+
+  app.delete("/api/auth/tokens/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.revokeAgentToken(user, c.req.param("id")));
+  });
+
+  app.get("/api/workspace", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getWorkspace(user));
+  });
+
+  app.get("/api/research/scenarios", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listResearchScenarios(user));
+  });
+
+  app.post("/api/research/scenarios", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      name: string;
+      summary: string;
+      geography: string;
+      businessModel: string;
+      customers: string[];
+      needs: string[];
+      tags: string[];
+    }>(c.req.raw);
+    return c.json(await services.createResearchScenario(user, payload), 201);
+  });
+
+  app.post("/api/research/requests", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ scenarioId: string }>(c.req.raw);
+    return c.json(await services.createResearchRequest(user, payload), 201);
+  });
+
+  app.get("/api/research/requests/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getResearchRequest(user, c.req.param("id")));
+  });
+
+  app.post("/api/research/requests/:id/run", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = c.req.header("content-type")?.includes("application/json")
+      ? await parseJson<{ awaitCompletion?: boolean }>(c.req.raw)
+      : {};
+    const result = await services.runResearchRequest(user, c.req.param("id"), payload);
+    return c.json(result, payload.awaitCompletion === false ? 202 : 200);
+  });
+
+  app.post("/api/research/requests/:id/steer", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ prompt: string }>(c.req.raw);
+    return c.json(await services.steerResearchRequest(user, c.req.param("id"), payload), 201);
+  });
+
+  app.patch("/api/grants/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ queueState: "active" | "inactive" }>(c.req.raw);
+    return c.json(await services.updateGrantQueueState(user, c.req.param("id"), payload.queueState));
+  });
+
+  app.post("/api/grants/:id/proposal-job", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.createProposalJobFromGrant(user, c.req.param("id")), 201);
+  });
+
+  app.get("/api/jobs", async (c) => {
+    await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listJobs());
+  });
+
+  app.post("/api/research", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ scenarioId: string }>(c.req.raw);
+    return c.json(await services.runResearch(user, payload.scenarioId));
+  });
+
+  app.post("/api/jobs", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ title: string; description: string; fundingNeed: string }>(c.req.raw);
+    return c.json(await services.createJob(user, payload), 201);
+  });
+
+  app.post("/api/jobs/:id/offers", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ message: string; amountUsd: string; payoutAddress: string }>(c.req.raw);
+    return c.json(await services.createOffer(user, c.req.param("id"), payload), 201);
+  });
+
+  app.post("/api/offers/:id/accept", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.acceptOffer(user, c.req.param("id")));
+  });
+
+  app.get("/api/engagements/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getEngagement(user, c.req.param("id")));
+  });
+
+  if (x402.mode === "live") {
+    app.use("/api/engagements/:id/fund", createLiveFundingMiddleware(services, x402));
+    app.post("/api/engagements/:id/fund", async (c) => {
+      const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+      const paymentHeader = c.req.header("payment-signature") ?? c.req.header("x-payment") ?? null;
+      return c.json(await services.fundEngagement(user, c.req.param("id"), x402, paymentHeader));
+    });
+  } else {
+    app.post("/api/engagements/:id/fund", async (c) => {
+      const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+      const challenge = await services.getFundingChallenge(user, c.req.param("id"), x402);
+      c.header("x-payment-protocol", "x402");
+      return c.json({ paymentRequired: challenge }, 402);
+    });
+  }
+
+  app.post("/rpc", async (c) => {
+    const request = await parseJson<JsonRpcRequest>(c.req.raw);
+    if (request.jsonrpc !== "2.0" || !request.method) {
+      return c.json(
+        {
+          jsonrpc: "2.0",
+          id: request.id ?? null,
+          error: {
+            code: -32600,
+            message: "Invalid JSON-RPC request.",
+          },
+        },
+        400,
+      );
+    }
+
+    try {
+      const authToken = parseAuthorizationHeader(c.req.header("authorization"));
+      const params = request.params ?? {};
+      let result: unknown;
+
+      switch (request.method) {
+        case "auth.session":
+          result = await services.getBrowserSession(authToken);
+          break;
+        case "auth.profile.upsert":
+          result = await services.upsertBrowserProfile(authToken, {
+            name: String(params.name ?? ""),
+            role: params.role === "specialist" ? "specialist" : "requester",
+            walletAddress: typeof params.walletAddress === "string" ? params.walletAddress : null,
+            smartWalletAddress:
+              typeof params.smartWalletAddress === "string" ? params.smartWalletAddress : null,
+          });
+          break;
+        case "auth.tokens.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listAgentTokens(user);
+          break;
+        }
+        case "auth.tokens.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createAgentToken(user, {
+            label: typeof params.label === "string" ? params.label : "agent",
+          });
+          break;
+        }
+        case "workspace.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getWorkspace(user);
+          break;
+        }
+        case "research.scenarios.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listResearchScenarios(user);
+          break;
+        }
+        case "research.scenarios.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createResearchScenario(user, {
+            name: String(params.name ?? ""),
+            summary: String(params.summary ?? ""),
+            geography: String(params.geography ?? ""),
+            businessModel: String(params.businessModel ?? ""),
+            customers: Array.isArray(params.customers)
+              ? params.customers.map((value) => String(value))
+              : [],
+            needs: Array.isArray(params.needs) ? params.needs.map((value) => String(value)) : [],
+            tags: Array.isArray(params.tags) ? params.tags.map((value) => String(value)) : [],
+          });
+          break;
+        }
+        case "research.requests.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createResearchRequest(user, {
+            scenarioId: String(params.scenarioId ?? ""),
+          });
+          break;
+        }
+        case "research.requests.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getResearchRequest(user, String(params.requestId ?? ""));
+          break;
+        }
+        case "research.requests.run": {
+          const user = await services.authenticate(authToken);
+          result = await services.runResearchRequest(user, String(params.requestId ?? ""), {
+            awaitCompletion:
+              typeof params.awaitCompletion === "boolean" ? params.awaitCompletion : true,
+          });
+          break;
+        }
+        case "research.requests.steer": {
+          const user = await services.authenticate(authToken);
+          result = await services.steerResearchRequest(user, String(params.requestId ?? ""), {
+            prompt: String(params.prompt ?? ""),
+          });
+          break;
+        }
+        case "research.run": {
+          const user = await services.authenticate(authToken);
+          result = await services.runResearch(user, String(params.scenarioId ?? ""));
+          break;
+        }
+        case "jobs.list": {
+          await services.authenticate(authToken);
+          result = await services.listJobs();
+          break;
+        }
+        case "jobs.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createJob(user, {
+            title: String(params.title ?? ""),
+            description: String(params.description ?? ""),
+            fundingNeed: String(params.fundingNeed ?? ""),
+          });
+          break;
+        }
+        case "offers.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createOffer(user, String(params.jobId ?? ""), {
+            message: String(params.message ?? ""),
+            amountUsd: String(params.amountUsd ?? ""),
+            payoutAddress: String(params.payoutAddress ?? ""),
+          });
+          break;
+        }
+        case "offers.accept": {
+          const user = await services.authenticate(authToken);
+          result = await services.acceptOffer(user, String(params.offerId ?? ""));
+          break;
+        }
+        case "engagements.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getEngagement(user, String(params.engagementId ?? ""));
+          break;
+        }
+        case "engagements.fund": {
+          const user = await services.authenticate(authToken);
+          const challenge = await services.getFundingChallenge(user, String(params.engagementId ?? ""), x402);
+          return c.json(
+            {
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: 402,
+                message: "Payment required.",
+                data: { paymentRequired: challenge },
+              },
+            },
+            402,
+          );
+        }
+        case "grants.updateQueue": {
+          const user = await services.authenticate(authToken);
+          result = await services.updateGrantQueueState(
+            user,
+            String(params.grantId ?? ""),
+            params.queueState === "inactive" ? "inactive" : "active",
+          );
+          break;
+        }
+        case "grants.createProposalJob": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProposalJobFromGrant(user, String(params.grantId ?? ""));
+          break;
+        }
+        default:
+          return c.json(
+            {
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: -32601,
+                message: `Method ${request.method} was not found.`,
+              },
+            },
+            404,
+          );
+      }
+
+      return c.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result,
+      });
+    } catch (error) {
+      const appError =
+        error instanceof AppError
+          ? error
+          : new AppError(500, "internal_error", error instanceof Error ? error.message : "Unexpected error.");
+
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: appError.status,
+            message: appError.message,
+            data: {
+              errorCode: appError.code,
+            },
+          },
+        }),
+        {
+          status: appError.status,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+  });
+
+  return app;
+}

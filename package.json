@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/cli.ts --outdir dist --target bun",
+    "build": "bun run build:server && bun run build:client",
+    "build:server": "bun build src/cli.ts src/server.ts --outdir dist --target bun",
+    "build:client": "bun build src/client.tsx --outfile dist/public/client.js --target browser",
+    "serve": "bun run src/server.ts",
     "research": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -13,10 +16,25 @@
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.61.0",
     "@mariozechner/pi-ai": "^0.61.0",
-    "cheerio": "^1.0.0"
+    "@privy-io/node": "^0.11.0",
+    "@privy-io/react-auth": "^3.18.0",
+    "@x402/core": "^2.7.0",
+    "@x402/evm": "^2.7.0",
+    "@x402/hono": "^2.7.0",
+    "cheerio": "^1.0.0",
+    "hono": "^4.8.3",
+    "permissionless": "^0.3.4",
+    "pg": "^8.20.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "viem": "^2.47.5"
   },
   "devDependencies": {
     "@types/bun": "^1.2.21",
+    "@types/pg": "^8.18.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "pg-mem": "^3.0.14",
     "typescript": "^5.8.3"
   }
 }
