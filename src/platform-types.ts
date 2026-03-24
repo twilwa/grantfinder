@@ -16,6 +16,7 @@ export type OrganizationType =
   | "for_profit"
   | "other";
 export type OrganizationOperatingScope = "local" | "regional" | "national" | "international";
+export type OrganizationPersonnelAccessState = "none" | "invited" | "active";
 export type ResearchRequestStatus = "draft" | "running" | "completed" | "failed";
 export type GrantQueueState = "active" | "inactive";
 export type GrantCatalogSourceType = "promoted" | "curated";
@@ -71,6 +72,35 @@ export interface PlatformOrganizationPersonnel {
   roleTitle: string;
   yearsExperience: number | null;
   email: string | null;
+  userId: string | null;
+  platformAccessEnabled: boolean;
+  accessState: OrganizationPersonnelAccessState;
+  canManageInvites: boolean;
+  invite: PlatformOrganizationInvite | null;
+}
+
+export interface PlatformOrganizationInvite {
+  id: string;
+  invitePath: string;
+  createdAt: string;
+  acceptedAt: string | null;
+}
+
+export interface PlatformOrganizationPrefill {
+  organizationName: string;
+  website: string | null;
+  registrationCountry: string;
+  registrationRegion: string | null;
+  organizationType: OrganizationType;
+  operatingScope: OrganizationOperatingScope;
+  localOperatingAreas: string[];
+  missionStatement: string;
+  programs: string[];
+  targetDemographics: string[];
+  thematicAreas: string[];
+  annualOperatingBudget: string;
+  strategicPriorities: string[];
+  capturedAt: string;
 }
 
 export interface PlatformOrganization {
@@ -170,6 +200,7 @@ export interface PlatformResearchRequest {
   id: string;
   requesterId: string;
   scenarioId: string;
+  organizationPrefill: PlatformOrganizationPrefill | null;
   status: ResearchRequestStatus;
   runPhase: ResearchRunPhase;
   progressSummary: string | null;
@@ -297,6 +328,7 @@ export interface PlatformApplicationWorkspace {
   requesterId: string;
   catalogGrantId: string | null;
   templateId: string | null;
+  organizationPrefill: PlatformOrganizationPrefill | null;
   documentType: ApplicationDocumentType;
   title: string;
   state: ApplicationWorkspaceState;

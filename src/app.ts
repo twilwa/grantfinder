@@ -370,7 +370,7 @@ X402_PAY_TO=${escapeHtml(x402.payTo)}</pre>
   -H 'Authorization: Bearer &lt;agentToken&gt;' \\
   -H 'content-type: application/json' \\
   -d '{"jsonrpc":"2.0","id":"jobs","method":"jobs.list","params":{}}'</pre>
-            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>organization.get</code>, <code>organization.upsert</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grantReports.list</code>, <code>catalog.grants.list</code>, <code>catalog.grants.get</code>, <code>catalog.grants.promote</code>, <code>catalog.grants.bookmark</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
+            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>organization.get</code>, <code>organization.upsert</code>, <code>organization.personnel.create</code>, <code>organization.invites.accept</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grantReports.list</code>, <code>catalog.grants.list</code>, <code>catalog.grants.get</code>, <code>catalog.grants.promote</code>, <code>catalog.grants.bookmark</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
           </div>
         </section>
       </section>`,
@@ -400,6 +400,8 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`POST /api/auth/tokens\`
 - \`GET /api/organization\`
 - \`PUT /api/organization\`
+- \`POST /api/organization/personnel\`
+- \`POST /api/organization/invites/:inviteId/accept\`
 - \`GET /api/workspace\`
 - \`GET /api/research/scenarios\`
 - \`POST /api/research/scenarios\`
@@ -438,6 +440,8 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`auth.tokens.create\`
 - \`organization.get\`
 - \`organization.upsert\`
+- \`organization.personnel.create\`
+- \`organization.invites.accept\`
 - \`workspace.get\`
 - \`research.scenarios.list\`
 - \`research.scenarios.create\`
@@ -688,13 +692,42 @@ export function createApp(options: AppOptions = {}) {
       strategicPriorities: string[];
       emailUpdatesEnabled: boolean;
       personnel: Array<{
+        id?: string;
         fullName: string;
         roleTitle: string;
         yearsExperience?: number | null;
         email?: string | null;
+        userId?: string | null;
+        platformAccessEnabled?: boolean;
+        accessState?: "none" | "invited" | "active";
+        canManageInvites?: boolean;
+        invite?: {
+          id: string;
+          invitePath: string;
+          createdAt: string;
+          acceptedAt?: string | null;
+        } | null;
       }>;
     }>(c.req.raw);
     return c.json(await services.upsertOrganization(user, payload), 201);
+  });
+
+  app.post("/api/organization/personnel", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      fullName: string;
+      roleTitle: string;
+      yearsExperience?: number | null;
+      email?: string | null;
+      platformAccessEnabled: boolean;
+      canManageInvites: boolean;
+    }>(c.req.raw);
+    return c.json(await services.createOrganizationPersonnel(user, payload), 201);
+  });
+
+  app.post("/api/organization/invites/:inviteId/accept", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.acceptOrganizationInvite(user, c.req.param("inviteId")));
   });
 
   app.get("/api/workspace", async (c) => {
@@ -1030,6 +1063,10 @@ export function createApp(options: AppOptions = {}) {
               ? params.personnel.map((entry) =>
                   typeof entry === "object" && entry !== null
                     ? {
+                        id:
+                          typeof (entry as Record<string, unknown>).id === "string"
+                            ? ((entry as Record<string, unknown>).id as string)
+                            : undefined,
                         fullName: String((entry as Record<string, unknown>).fullName ?? ""),
                         roleTitle: String((entry as Record<string, unknown>).roleTitle ?? ""),
                         yearsExperience:
@@ -1040,16 +1077,77 @@ export function createApp(options: AppOptions = {}) {
                           typeof (entry as Record<string, unknown>).email === "string"
                             ? ((entry as Record<string, unknown>).email as string)
                             : null,
+                        userId:
+                          typeof (entry as Record<string, unknown>).userId === "string"
+                            ? ((entry as Record<string, unknown>).userId as string)
+                            : null,
+                        platformAccessEnabled: Boolean(
+                          (entry as Record<string, unknown>).platformAccessEnabled,
+                        ),
+                        accessState:
+                          (entry as Record<string, unknown>).accessState === "active"
+                            ? "active"
+                            : (entry as Record<string, unknown>).accessState === "invited"
+                              ? "invited"
+                              : "none",
+                        canManageInvites: Boolean((entry as Record<string, unknown>).canManageInvites),
+                        invite:
+                          typeof (entry as Record<string, unknown>).invite === "object" &&
+                          (entry as Record<string, unknown>).invite !== null
+                            ? {
+                                id: String(
+                                  ((entry as Record<string, unknown>).invite as Record<string, unknown>).id ?? "",
+                                ),
+                                invitePath: String(
+                                  ((entry as Record<string, unknown>).invite as Record<string, unknown>).invitePath ??
+                                    "",
+                                ),
+                                createdAt: String(
+                                  ((entry as Record<string, unknown>).invite as Record<string, unknown>).createdAt ??
+                                    "",
+                                ),
+                                acceptedAt:
+                                  typeof ((entry as Record<string, unknown>).invite as Record<string, unknown>)
+                                    .acceptedAt === "string"
+                                    ? (((entry as Record<string, unknown>).invite as Record<string, unknown>)
+                                        .acceptedAt as string)
+                                    : null,
+                              }
+                            : null,
                       }
                     : {
+                        id: undefined,
                         fullName: "",
                         roleTitle: "",
                         yearsExperience: null,
                         email: null,
+                        userId: null,
+                        platformAccessEnabled: false,
+                        accessState: "none",
+                        canManageInvites: false,
+                        invite: null,
                       },
                 )
               : [],
           });
+          break;
+        }
+        case "organization.personnel.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createOrganizationPersonnel(user, {
+            fullName: String(params.fullName ?? ""),
+            roleTitle: String(params.roleTitle ?? ""),
+            yearsExperience:
+              typeof params.yearsExperience === "number" ? params.yearsExperience : null,
+            email: typeof params.email === "string" ? params.email : null,
+            platformAccessEnabled: Boolean(params.platformAccessEnabled),
+            canManageInvites: Boolean(params.canManageInvites),
+          });
+          break;
+        }
+        case "organization.invites.accept": {
+          const user = await services.authenticate(authToken);
+          result = await services.acceptOrganizationInvite(user, String(params.inviteId ?? ""));
           break;
         }
         case "workspace.get": {

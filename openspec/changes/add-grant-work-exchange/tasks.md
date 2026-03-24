@@ -1,6 +1,6 @@
 ## 1. Domain and persistence groundwork
 
-- [ ] 1.1 Add persistent organization, personnel, invite, and organization-prefill models to the platform types and store layer
+- [x] 1.1 Add persistent organization, personnel, invite, and organization-prefill models to the platform types and store layer
 - [x] 1.2 Add durable grant report, grant catalog entry, and bookmark models with promotion paths from research output
 - [x] 1.3 Add application workspace, workspace section, and document-type models with draft/proposal lifecycle state
 - [x] 1.4 Add funder-schema, custom-template, and agent-provider-connection models with ownership and audit fields
@@ -8,8 +8,8 @@
 ## 2. Organization knowledge base
 
 - [x] 2.1 Add service-layer APIs for organization profile read/write, structured field validation, and notification preferences
-- [ ] 2.2 Add personnel and invite-link workflows with permission-gated access rules
-- [ ] 2.3 Feed organization prefills into new workspace creation and eligible research/scout requests
+- [x] 2.2 Add personnel and invite-link workflows with permission-gated access rules
+- [x] 2.3 Feed organization prefills into new workspace creation and eligible research/scout requests
 
 ## 3. Grant intelligence hub
 
@@ -43,7 +43,7 @@
 
 ## 8. Validation
 
-- [ ] 8.1 Add tests for organization persistence, prefills, personnel, and invite permissions
+- [x] 8.1 Add tests for organization persistence, prefills, personnel, and invite permissions
 - [x] 8.2 Add tests for report-to-catalog promotion, bookmarks, and grant-detail retrieval
 - [x] 8.3 Add tests for structured workspace lifecycle, section generation, and schema-driven validation
 - [x] 8.4 Add tests for artifact-scoped marketplace requests and provider-connection audit trails

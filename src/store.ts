@@ -19,7 +19,9 @@ import type {
   PlatformJob,
   PlatformOffer,
   PlatformOrganization,
+  PlatformOrganizationInvite,
   PlatformOrganizationPersonnel,
+  PlatformOrganizationPrefill,
   PlatformResearchActivity,
   PlatformPaymentRecord,
   PlatformResearchRequest,
@@ -122,6 +124,98 @@ function toUser(row: Record<string, unknown>): PlatformUser {
   };
 }
 
+function toOrganizationInvite(value: unknown): PlatformOrganizationInvite | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const invite = value as Record<string, unknown>;
+  const id = typeof invite.id === "string" ? invite.id : "";
+  const invitePath = typeof invite.invitePath === "string" ? invite.invitePath : "";
+  const createdAt = typeof invite.createdAt === "string" ? invite.createdAt : "";
+  if (!id || !invitePath || !createdAt) {
+    return null;
+  }
+
+  return {
+    id,
+    invitePath,
+    createdAt,
+    acceptedAt: typeof invite.acceptedAt === "string" ? invite.acceptedAt : null,
+  };
+}
+
+function toOrganizationPersonnel(value: unknown): PlatformOrganizationPersonnel {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const platformAccessEnabled = Boolean(record.platformAccessEnabled);
+  const invite = toOrganizationInvite(record.invite);
+
+  return {
+    id: typeof record.id === "string" ? record.id : makeId("person"),
+    fullName: typeof record.fullName === "string" ? record.fullName : "",
+    roleTitle: typeof record.roleTitle === "string" ? record.roleTitle : "",
+    yearsExperience:
+      typeof record.yearsExperience === "number" && Number.isFinite(record.yearsExperience)
+        ? record.yearsExperience
+        : null,
+    email: typeof record.email === "string" ? record.email : null,
+    userId: typeof record.userId === "string" ? record.userId : null,
+    platformAccessEnabled,
+    accessState:
+      record.accessState === "active"
+        ? "active"
+        : record.accessState === "invited"
+          ? "invited"
+          : "none",
+    canManageInvites: Boolean(record.canManageInvites) && platformAccessEnabled,
+    invite,
+  };
+}
+
+function toOrganizationPrefill(value: unknown): PlatformOrganizationPrefill | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const organizationName = typeof record.organizationName === "string" ? record.organizationName : "";
+  const registrationCountry =
+    typeof record.registrationCountry === "string" ? record.registrationCountry : "";
+  const missionStatement = typeof record.missionStatement === "string" ? record.missionStatement : "";
+  const annualOperatingBudget =
+    typeof record.annualOperatingBudget === "string" ? record.annualOperatingBudget : "";
+  const capturedAt = typeof record.capturedAt === "string" ? record.capturedAt : "";
+
+  if (!organizationName || !registrationCountry || !missionStatement || !annualOperatingBudget || !capturedAt) {
+    return null;
+  }
+
+  return {
+    organizationName,
+    website: typeof record.website === "string" ? record.website : null,
+    registrationCountry,
+    registrationRegion: typeof record.registrationRegion === "string" ? record.registrationRegion : null,
+    organizationType: String(record.organizationType) as PlatformOrganization["organizationType"],
+    operatingScope: String(record.operatingScope) as PlatformOrganization["operatingScope"],
+    localOperatingAreas: Array.isArray(record.localOperatingAreas)
+      ? record.localOperatingAreas.map((entry) => String(entry))
+      : [],
+    missionStatement,
+    programs: Array.isArray(record.programs) ? record.programs.map((entry) => String(entry)) : [],
+    targetDemographics: Array.isArray(record.targetDemographics)
+      ? record.targetDemographics.map((entry) => String(entry))
+      : [],
+    thematicAreas: Array.isArray(record.thematicAreas)
+      ? record.thematicAreas.map((entry) => String(entry))
+      : [],
+    annualOperatingBudget,
+    strategicPriorities: Array.isArray(record.strategicPriorities)
+      ? record.strategicPriorities.map((entry) => String(entry))
+      : [],
+    capturedAt,
+  };
+}
+
 function toOrganization(row: Record<string, unknown>): PlatformOrganization {
   return {
     id: String(row.id),
@@ -140,7 +234,7 @@ function toOrganization(row: Record<string, unknown>): PlatformOrganization {
     annualOperatingBudget: String(row.annual_operating_budget),
     strategicPriorities: parseJsonText<string[]>(row.strategic_priorities_json, []),
     emailUpdatesEnabled: Boolean(row.email_updates_enabled),
-    personnel: parseJsonText<PlatformOrganizationPersonnel[]>(row.personnel_json, []),
+    personnel: parseJsonText<unknown[]>(row.personnel_json, []).map((entry) => toOrganizationPersonnel(entry)),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -287,6 +381,7 @@ function toResearchRequest(row: Record<string, unknown>): PlatformResearchReques
     id: String(row.id),
     requesterId: String(row.requester_id),
     scenarioId: String(row.scenario_id),
+    organizationPrefill: toOrganizationPrefill(row.organization_prefill_json),
     status:
       row.status === "running"
         ? "running"
@@ -445,6 +540,7 @@ function toApplicationWorkspace(row: Record<string, unknown>): PlatformApplicati
     requesterId: String(row.requester_id),
     catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
     templateId: row.template_id ? String(row.template_id) : null,
+    organizationPrefill: toOrganizationPrefill(row.organization_prefill_json),
     documentType:
       row.document_type === "loi"
         ? "loi"
@@ -1493,6 +1589,7 @@ class PostgresStore {
         id,
         requester_id,
         scenario_id,
+        organization_prefill_json,
         status,
         run_phase,
         progress_summary,
@@ -1505,12 +1602,13 @@ class PostgresStore {
         created_at,
         updated_at,
         last_run_at
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       returning *`,
       [
         request.id,
         request.requesterId,
         request.scenarioId,
+        request.organizationPrefill ? JSON.stringify(request.organizationPrefill) : null,
         request.status,
         request.runPhase,
         request.progressSummary,
@@ -1543,22 +1641,24 @@ class PostgresStore {
     const result = await this.database.query(
       `update research_requests
        set scenario_id = $2,
-           status = $3,
-           run_phase = $4,
-           progress_summary = $5,
-           run_started_at = $6,
-           brief_json = $7,
-           report_json = $8,
-           error_message = $9,
-           activity_json = $10,
-           steering_json = $11,
-           updated_at = $12,
-           last_run_at = $13
+           organization_prefill_json = $3,
+           status = $4,
+           run_phase = $5,
+           progress_summary = $6,
+           run_started_at = $7,
+           brief_json = $8,
+           report_json = $9,
+           error_message = $10,
+           activity_json = $11,
+           steering_json = $12,
+           updated_at = $13,
+           last_run_at = $14
        where id = $1
        returning *`,
       [
         request.id,
         request.scenarioId,
+        request.organizationPrefill ? JSON.stringify(request.organizationPrefill) : null,
         request.status,
         request.runPhase,
         request.progressSummary,
@@ -1925,6 +2025,7 @@ class PostgresStore {
         requester_id,
         catalog_grant_id,
         template_id,
+        organization_prefill_json,
         document_type,
         title,
         state,
@@ -1932,13 +2033,14 @@ class PostgresStore {
         created_at,
         updated_at,
         finalized_at
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       returning *`,
       [
         workspace.id,
         workspace.requesterId,
         workspace.catalogGrantId,
         workspace.templateId,
+        workspace.organizationPrefill ? JSON.stringify(workspace.organizationPrefill) : null,
         workspace.documentType,
         workspace.title,
         workspace.state,
@@ -1966,18 +2068,20 @@ class PostgresStore {
       `update application_workspaces
        set catalog_grant_id = $2,
            template_id = $3,
-           document_type = $4,
-           title = $5,
-           state = $6,
-           sections_json = $7,
-           updated_at = $8,
-           finalized_at = $9
+           organization_prefill_json = $4,
+           document_type = $5,
+           title = $6,
+           state = $7,
+           sections_json = $8,
+           updated_at = $9,
+           finalized_at = $10
        where id = $1
        returning *`,
       [
         workspace.id,
         workspace.catalogGrantId,
         workspace.templateId,
+        workspace.organizationPrefill ? JSON.stringify(workspace.organizationPrefill) : null,
         workspace.documentType,
         workspace.title,
         workspace.state,
@@ -2225,6 +2329,7 @@ class PostgresStore {
         id text primary key,
         requester_id text not null references users (id) on delete cascade,
         scenario_id text not null,
+        organization_prefill_json text,
         status text not null check (status in ('draft', 'running', 'completed', 'failed')),
         run_phase text not null default 'idle',
         progress_summary text,
@@ -2238,6 +2343,10 @@ class PostgresStore {
         updated_at text not null,
         last_run_at text
       )
+    `);
+    await this.database.query(`
+      alter table research_requests
+      add column if not exists organization_prefill_json text
     `);
     await this.database.query(`
       alter table research_requests add column if not exists run_phase text not null default 'idle'
@@ -2353,6 +2462,7 @@ class PostgresStore {
         requester_id text not null references users (id) on delete cascade,
         catalog_grant_id text references grant_catalog_entries (id) on delete set null,
         template_id text references application_templates (id) on delete set null,
+        organization_prefill_json text,
         document_type text not null,
         title text not null,
         state text not null check (state in ('draft', 'proposal')),
@@ -2361,6 +2471,10 @@ class PostgresStore {
         updated_at text not null,
         finalized_at text
       )
+    `);
+    await this.database.query(`
+      alter table application_workspaces
+      add column if not exists organization_prefill_json text
     `);
     await this.database.query(`
       create table if not exists agent_provider_connections (

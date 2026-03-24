@@ -30,6 +30,7 @@ import type {
   PlatformOffer,
   PlatformOrganization,
   PlatformOrganizationPersonnel,
+  PlatformOrganizationPrefill,
   PlatformResearchActivity,
   PlatformResearchRequest,
   PlatformResearchScenario,
@@ -78,11 +79,31 @@ interface UpsertOrganizationInput {
   strategicPriorities: string[];
   emailUpdatesEnabled: boolean;
   personnel: Array<{
+    id?: string;
     fullName: string;
     roleTitle: string;
     yearsExperience?: number | null;
     email?: string | null;
+    userId?: string | null;
+    platformAccessEnabled?: boolean;
+    accessState?: PlatformOrganizationPersonnel["accessState"];
+    canManageInvites?: boolean;
+    invite?: {
+      id: string;
+      invitePath: string;
+      createdAt: string;
+      acceptedAt?: string | null;
+    } | null;
   }>;
+}
+
+interface CreateOrganizationPersonnelInput {
+  fullName: string;
+  roleTitle: string;
+  yearsExperience?: number | null;
+  email?: string | null;
+  platformAccessEnabled: boolean;
+  canManageInvites: boolean;
 }
 
 interface CreateJobInput {
@@ -331,6 +352,18 @@ export class ApplicationServices {
         roleTitle: person.roleTitle,
         yearsExperience: person.yearsExperience,
         email: person.email,
+        userId: person.userId,
+        platformAccessEnabled: person.platformAccessEnabled,
+        accessState: person.accessState,
+        canManageInvites: person.canManageInvites,
+        invite: person.invite
+          ? {
+              id: person.invite.id,
+              invitePath: person.invite.invitePath,
+              createdAt: person.invite.createdAt,
+              acceptedAt: person.invite.acceptedAt,
+            }
+          : null,
       })),
       createdAt: organization.createdAt,
       updatedAt: organization.updatedAt,
@@ -434,6 +467,16 @@ export class ApplicationServices {
       requesterId: workspace.requesterId,
       catalogGrantId: workspace.catalogGrantId,
       templateId: workspace.templateId,
+      organizationPrefill: workspace.organizationPrefill
+        ? {
+            ...workspace.organizationPrefill,
+            localOperatingAreas: [...workspace.organizationPrefill.localOperatingAreas],
+            programs: [...workspace.organizationPrefill.programs],
+            targetDemographics: [...workspace.organizationPrefill.targetDemographics],
+            thematicAreas: [...workspace.organizationPrefill.thematicAreas],
+            strategicPriorities: [...workspace.organizationPrefill.strategicPriorities],
+          }
+        : null,
       documentType: workspace.documentType,
       title: workspace.title,
       state: workspace.state,
@@ -567,7 +610,7 @@ export class ApplicationServices {
   }
 
   async getOrganization(user: PlatformUser) {
-    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    const organization = await this.findOrganizationForUser(user);
     return {
       organization: organization ? this.toPublicOrganization(organization) : null,
     };
@@ -581,8 +624,22 @@ export class ApplicationServices {
       throw new AppError(400, "invalid_input", "thematicAreas can contain at most 3 values.");
     }
 
+    const existingOrganization = await this.findOrganizationForUser(user);
+    const preservedPersonnel = existingOrganization?.personnel ?? [];
+    const normalizedPersonnel = this.normalizeOrganizationPersonnel(input.personnel);
+    const canManagePersonnel = existingOrganization
+      ? this.canManageOrganizationInvites(existingOrganization, user.id)
+      : true;
+    if (!canManagePersonnel && !this.samePersonnelRecords(normalizedPersonnel, preservedPersonnel)) {
+      throw new AppError(
+        403,
+        "forbidden",
+        "You do not have permission to change organization personnel or invite settings.",
+      );
+    }
+
     const organization = await this.store.upsertOrganization({
-      ownerUserId: user.id,
+      ownerUserId: existingOrganization?.ownerUserId ?? user.id,
       name: requireText(input.name, "name"),
       website: this.normalizeOptionalText(input.website),
       registrationCountry: requireText(input.registrationCountry, "registrationCountry"),
@@ -597,11 +654,110 @@ export class ApplicationServices {
       annualOperatingBudget: requireText(input.annualOperatingBudget, "annualOperatingBudget"),
       strategicPriorities: normalizeTextList(input.strategicPriorities, "strategicPriorities"),
       emailUpdatesEnabled: Boolean(input.emailUpdatesEnabled),
-      personnel: this.normalizeOrganizationPersonnel(input.personnel),
+      personnel: canManagePersonnel ? normalizedPersonnel : preservedPersonnel,
     });
 
     return {
       organization: this.toPublicOrganization(organization),
+    };
+  }
+
+  async createOrganizationPersonnel(user: PlatformUser, input: CreateOrganizationPersonnelInput) {
+    this.requireRole(user, "requester");
+
+    const organization = await this.requireOrganizationInviteManager(user);
+    const timestamp = now();
+    const inviteId = makeId("invite");
+    const personnel: PlatformOrganizationPersonnel = {
+      id: makeId("person"),
+      fullName: requireText(input.fullName, "fullName"),
+      roleTitle: requireText(input.roleTitle, "roleTitle"),
+      yearsExperience: this.normalizePersonnelYearsExperience(input.yearsExperience),
+      email: this.normalizeOptionalText(input.email),
+      userId: null,
+      platformAccessEnabled: Boolean(input.platformAccessEnabled),
+      accessState: input.platformAccessEnabled ? "invited" : "none",
+      canManageInvites: Boolean(input.canManageInvites) && Boolean(input.platformAccessEnabled),
+      invite: input.platformAccessEnabled
+        ? {
+            id: inviteId,
+            invitePath: `/api/organization/invites/${inviteId}`,
+            createdAt: timestamp,
+            acceptedAt: null,
+          }
+        : null,
+    };
+
+    const savedOrganization = await this.saveOrganization({
+      ...organization,
+      personnel: [...organization.personnel, personnel],
+      updatedAt: timestamp,
+    });
+    const savedPersonnel = savedOrganization.personnel.find((candidate) => candidate.id === personnel.id);
+    if (!savedPersonnel) {
+      throw new AppError(500, "personnel_missing", "The saved organization contact could not be loaded.");
+    }
+
+    return {
+      organization: this.toPublicOrganization(savedOrganization),
+      personnel: this.toPublicOrganization(savedOrganization).personnel.find(
+        (candidate) => candidate.id === personnel.id,
+      ),
+    };
+  }
+
+  async acceptOrganizationInvite(user: PlatformUser, inviteId: string) {
+    this.requireRole(user, "requester");
+
+    const organization = await this.findOrganizationByInviteId(requireText(inviteId, "inviteId"));
+    if (!organization) {
+      throw new AppError(404, "invite_not_found", "The requested organization invite does not exist.");
+    }
+
+    const timestamp = now();
+    let acceptedPersonnelId: string | null = null;
+    const updatedPersonnel = organization.personnel.map((person) => {
+      if (person.invite?.id !== inviteId) {
+        return person;
+      }
+
+      if (person.accessState === "active" || person.invite?.acceptedAt) {
+        throw new AppError(409, "invite_already_accepted", "This organization invite has already been accepted.");
+      }
+
+      acceptedPersonnelId = person.id;
+      return {
+        ...person,
+        userId: user.id,
+        accessState: "active" as const,
+        invite: person.invite
+          ? {
+              ...person.invite,
+              acceptedAt: timestamp,
+            }
+          : null,
+      };
+    });
+
+    if (!acceptedPersonnelId) {
+      throw new AppError(404, "invite_not_found", "The requested organization invite does not exist.");
+    }
+
+    const savedOrganization = await this.saveOrganization({
+      ...organization,
+      personnel: updatedPersonnel,
+      updatedAt: timestamp,
+    });
+    const savedPersonnel = savedOrganization.personnel.find((person) => person.id === acceptedPersonnelId);
+    if (!savedPersonnel) {
+      throw new AppError(500, "invite_accept_failed", "The accepted collaborator record could not be loaded.");
+    }
+
+    return {
+      organization: this.toPublicOrganization(savedOrganization),
+      personnel: this.toPublicOrganization(savedOrganization).personnel.find(
+        (person) => person.id === acceptedPersonnelId,
+      ),
     };
   }
 
@@ -667,11 +823,13 @@ export class ApplicationServices {
     this.requireRole(user, "requester");
 
     const scenario = await this.loadScenarioForUser(user, requireText(input.scenarioId, "scenarioId"));
+    const organizationPrefill = this.buildOrganizationPrefill(await this.findOrganizationForUser(user));
     const timestamp = now();
     const request: PlatformResearchRequest = {
       id: makeId("request"),
       requesterId: user.id,
       scenarioId: scenario.id,
+      organizationPrefill,
       status: "draft",
       runPhase: "idle",
       progressSummary: null,
@@ -693,10 +851,14 @@ export class ApplicationServices {
 
   async runResearch(_user: PlatformUser, scenarioId: string) {
     const scenario = await this.loadScenarioForUser(_user, requireText(scenarioId, "scenarioId"));
-    const result = await this.executeResearch(scenario);
+    const scenarioWithPrefill = this.attachOrganizationPrefillToScenario(
+      scenario,
+      this.buildOrganizationPrefill(await this.findOrganizationForUser(_user)),
+    );
+    const result = await this.executeResearch(scenarioWithPrefill);
 
     return {
-      scenario,
+      scenario: scenarioWithPrefill,
       brief: result.brief,
       report: result.report,
     };
@@ -743,7 +905,10 @@ export class ApplicationServices {
       steeringNotes: [],
       updatedAt: startedAt,
     });
-    const scenario = await this.loadScenarioForUser(user, runningRequest.scenarioId);
+    const scenario = this.attachOrganizationPrefillToScenario(
+      await this.loadScenarioForUser(user, runningRequest.scenarioId),
+      runningRequest.organizationPrefill,
+    );
     this.activeResearchRuns.set(request.id, {
       session: null,
       queuedSteeringIds: [],
@@ -831,7 +996,7 @@ export class ApplicationServices {
         .map((bookmark) => bookmark.grantId),
     );
     const organization =
-      state.organizations.find((candidate) => candidate.ownerUserId === user.id) ?? null;
+      state.organizations.find((candidate) => this.userBelongsToOrganization(candidate, user.id)) ?? null;
     const requests = state.researchRequests
       .filter((request) => request.requesterId === user.id)
       .map((request) => {
@@ -1047,7 +1212,7 @@ export class ApplicationServices {
 
     const documentType = this.requireApplicationDocumentType(input.documentType);
     const timestamp = now();
-    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    const organizationPrefill = this.buildOrganizationPrefill(await this.findOrganizationForUser(user));
     let catalogGrant: PlatformGrantCatalogEntry | null = null;
     let template: PlatformApplicationTemplate | null = null;
     let schema: PlatformGrantApplicationSchema | null = null;
@@ -1070,13 +1235,19 @@ export class ApplicationServices {
       requesterId: user.id,
       catalogGrantId: catalogGrant?.id ?? null,
       templateId: template?.id ?? null,
+      organizationPrefill,
       documentType,
       title:
         catalogGrant?.title ??
         template?.name ??
         `${documentType.replaceAll("_", " ")} workspace`,
       state: "draft",
-      sections: this.instantiateWorkspaceSections(sectionDefinitions, organization, catalogGrant, timestamp),
+      sections: this.instantiateWorkspaceSections(
+        sectionDefinitions,
+        organizationPrefill,
+        catalogGrant,
+        timestamp,
+      ),
       createdAt: timestamp,
       updatedAt: timestamp,
       finalizedAt: null,
@@ -1121,13 +1292,12 @@ export class ApplicationServices {
       throw new AppError(404, "workspace_section_not_found", "The requested workspace section does not exist.");
     }
 
-    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
     const catalogGrant = workspace.catalogGrantId
       ? await this.store.findGrantCatalogEntryById(workspace.catalogGrantId)
       : null;
     const generatedContent = this.composeWorkspaceSectionContent(
       workspace.sections[sectionIndex],
-      organization,
+      workspace.organizationPrefill,
       catalogGrant,
     );
     const updatedAt = now();
@@ -1945,23 +2115,31 @@ export class ApplicationServices {
         throw new AppError(400, "invalid_input", "personnel entries must be objects.");
       }
 
-      const yearsExperience = entry.yearsExperience;
-      const normalizedYears =
-        yearsExperience === null || yearsExperience === undefined
-          ? null
-          : typeof yearsExperience === "number" && Number.isFinite(yearsExperience) && yearsExperience >= 0
-            ? yearsExperience
-            : Number.NaN;
-      if (Number.isNaN(normalizedYears)) {
+      const platformAccessEnabled = Boolean(entry.platformAccessEnabled);
+      const accessState = platformAccessEnabled
+        ? this.normalizeOrganizationPersonnelAccessState(entry.accessState)
+        : "none";
+      const invite = platformAccessEnabled ? this.normalizeOrganizationInvite(entry.invite) : null;
+      const userId = platformAccessEnabled ? this.normalizeOptionalText(entry.userId) : null;
+
+      if (accessState === "active" && !userId) {
         throw new AppError(
           400,
           "invalid_input",
-          "personnel.yearsExperience must be a non-negative number when provided.",
+          "personnel.userId is required when accessState is active.",
+        );
+      }
+
+      if (accessState === "invited" && !invite) {
+        throw new AppError(
+          400,
+          "invalid_input",
+          "personnel.invite is required when accessState is invited.",
         );
       }
 
       return {
-        id: makeId("person"),
+        id: typeof entry.id === "string" && entry.id.trim() ? entry.id : makeId("person"),
         fullName: requireText(
           typeof entry.fullName === "string" ? entry.fullName : "",
           "personnel.fullName",
@@ -1970,9 +2148,195 @@ export class ApplicationServices {
           typeof entry.roleTitle === "string" ? entry.roleTitle : "",
           "personnel.roleTitle",
         ),
-        yearsExperience: normalizedYears,
+        yearsExperience: this.normalizePersonnelYearsExperience(entry.yearsExperience),
         email: this.normalizeOptionalText(entry.email),
+        userId,
+        platformAccessEnabled,
+        accessState,
+        canManageInvites: Boolean(entry.canManageInvites) && platformAccessEnabled,
+        invite,
       };
+    });
+  }
+
+  private normalizePersonnelYearsExperience(value: unknown): number | null {
+    const normalizedYears =
+      value === null || value === undefined
+        ? null
+        : typeof value === "number" && Number.isFinite(value) && value >= 0
+          ? value
+          : Number.NaN;
+    if (Number.isNaN(normalizedYears)) {
+      throw new AppError(
+        400,
+        "invalid_input",
+        "personnel.yearsExperience must be a non-negative number when provided.",
+      );
+    }
+
+    return normalizedYears;
+  }
+
+  private normalizeOrganizationInvite(value: unknown) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (!this.isRecord(value)) {
+      throw new AppError(400, "invalid_input", "personnel.invite must be an object when provided.");
+    }
+
+    return {
+      id: requireText(typeof value.id === "string" ? value.id : "", "personnel.invite.id"),
+      invitePath: requireText(
+        typeof value.invitePath === "string" ? value.invitePath : "",
+        "personnel.invite.invitePath",
+      ),
+      createdAt: requireText(
+        typeof value.createdAt === "string" ? value.createdAt : "",
+        "personnel.invite.createdAt",
+      ),
+      acceptedAt: this.normalizeOptionalText(value.acceptedAt),
+    };
+  }
+
+  private normalizeOrganizationPersonnelAccessState(
+    value: unknown,
+  ): PlatformOrganizationPersonnel["accessState"] {
+    return value === "active" ? "active" : value === "invited" ? "invited" : "none";
+  }
+
+  private samePersonnelRecords(
+    left: PlatformOrganizationPersonnel[],
+    right: PlatformOrganizationPersonnel[],
+  ): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  private async findOrganizationForUser(user: PlatformUser): Promise<PlatformOrganization | null> {
+    const ownedOrganization = await this.store.findOrganizationByOwnerUserId(user.id);
+    if (ownedOrganization) {
+      return ownedOrganization;
+    }
+
+    const state = await this.store.readState();
+    return state.organizations.find((organization) => this.userBelongsToOrganization(organization, user.id)) ?? null;
+  }
+
+  private async findOrganizationByInviteId(inviteId: string): Promise<PlatformOrganization | null> {
+    const state = await this.store.readState();
+    return (
+      state.organizations.find((organization) =>
+        organization.personnel.some((person) => person.invite?.id === inviteId),
+      ) ?? null
+    );
+  }
+
+  private userBelongsToOrganization(organization: PlatformOrganization, userId: string): boolean {
+    return (
+      organization.ownerUserId === userId ||
+      organization.personnel.some(
+        (person) =>
+          person.userId === userId &&
+          person.platformAccessEnabled &&
+          person.accessState === "active",
+      )
+    );
+  }
+
+  private canManageOrganizationInvites(organization: PlatformOrganization, userId: string): boolean {
+    return (
+      organization.ownerUserId === userId ||
+      organization.personnel.some(
+        (person) =>
+          person.userId === userId &&
+          person.platformAccessEnabled &&
+          person.accessState === "active" &&
+          person.canManageInvites,
+      )
+    );
+  }
+
+  private async requireOrganizationInviteManager(user: PlatformUser): Promise<PlatformOrganization> {
+    const organization = await this.findOrganizationForUser(user);
+    if (!organization) {
+      throw new AppError(409, "organization_required", "Create or join an organization before managing invites.");
+    }
+
+    if (!this.canManageOrganizationInvites(organization, user.id)) {
+      throw new AppError(403, "forbidden", "You do not have permission to manage organization invites.");
+    }
+
+    return organization;
+  }
+
+  private buildOrganizationPrefill(
+    organization: PlatformOrganization | null,
+  ): PlatformOrganizationPrefill | null {
+    if (!organization) {
+      return null;
+    }
+
+    return {
+      organizationName: organization.name,
+      website: organization.website,
+      registrationCountry: organization.registrationCountry,
+      registrationRegion: organization.registrationRegion,
+      organizationType: organization.organizationType,
+      operatingScope: organization.operatingScope,
+      localOperatingAreas: [...organization.localOperatingAreas],
+      missionStatement: organization.missionStatement,
+      programs: [...organization.programs],
+      targetDemographics: [...organization.targetDemographics],
+      thematicAreas: [...organization.thematicAreas],
+      annualOperatingBudget: organization.annualOperatingBudget,
+      strategicPriorities: [...organization.strategicPriorities],
+      capturedAt: organization.updatedAt,
+    };
+  }
+
+  private attachOrganizationPrefillToScenario(
+    scenario: BusinessScenario,
+    organizationPrefill: PlatformOrganizationPrefill | null,
+  ): BusinessScenario & { organizationPrefill?: PlatformOrganizationPrefill | null } {
+    if (!organizationPrefill) {
+      return { ...scenario };
+    }
+
+    return {
+      ...scenario,
+      organizationPrefill: {
+        ...organizationPrefill,
+        localOperatingAreas: [...organizationPrefill.localOperatingAreas],
+        programs: [...organizationPrefill.programs],
+        targetDemographics: [...organizationPrefill.targetDemographics],
+        thematicAreas: [...organizationPrefill.thematicAreas],
+        strategicPriorities: [...organizationPrefill.strategicPriorities],
+      },
+    };
+  }
+
+  private async saveOrganization(organization: PlatformOrganization): Promise<PlatformOrganization> {
+    return this.store.upsertOrganization({
+      ownerUserId: organization.ownerUserId,
+      name: organization.name,
+      website: organization.website,
+      registrationCountry: organization.registrationCountry,
+      registrationRegion: organization.registrationRegion,
+      organizationType: organization.organizationType,
+      operatingScope: organization.operatingScope,
+      localOperatingAreas: [...organization.localOperatingAreas],
+      missionStatement: organization.missionStatement,
+      programs: [...organization.programs],
+      targetDemographics: [...organization.targetDemographics],
+      thematicAreas: [...organization.thematicAreas],
+      annualOperatingBudget: organization.annualOperatingBudget,
+      strategicPriorities: [...organization.strategicPriorities],
+      emailUpdatesEnabled: organization.emailUpdatesEnabled,
+      personnel: organization.personnel.map((person) => ({
+        ...person,
+        invite: person.invite ? { ...person.invite } : null,
+      })),
     });
   }
 
@@ -2209,14 +2573,14 @@ export class ApplicationServices {
       examples: string[];
       validation: { minWords: number | null; maxWords: number | null };
     }>,
-    organization: PlatformOrganization | null,
+    organizationPrefill: PlatformOrganizationPrefill | null,
     grant: PlatformGrantCatalogEntry | null,
     timestamp: string,
   ): PlatformApplicationWorkspaceSection[] {
     return definitions.map((section, index) => ({
       ...section,
       orderIndex: index,
-      content: this.prefillWorkspaceSection(section.key, organization, grant),
+      content: this.prefillWorkspaceSection(section.key, organizationPrefill, grant),
       createdAt: timestamp,
       updatedAt: timestamp,
     }));
@@ -2224,17 +2588,17 @@ export class ApplicationServices {
 
   private prefillWorkspaceSection(
     sectionKey: string,
-    organization: PlatformOrganization | null,
+    organizationPrefill: PlatformOrganizationPrefill | null,
     grant: PlatformGrantCatalogEntry | null,
   ): string {
-    if (!organization) {
+    if (!organizationPrefill) {
       return "";
     }
 
     if (sectionKey === "organization_profile") {
-      const audience = organization.targetDemographics.join(", ");
+      const audience = organizationPrefill.targetDemographics.join(", ");
       return [
-        `${organization.name} is a ${organization.organizationType.replaceAll("_", " ")} organization focused on ${organization.missionStatement}`,
+        `${organizationPrefill.organizationName} is a ${organizationPrefill.organizationType.replaceAll("_", " ")} organization focused on ${organizationPrefill.missionStatement}`,
         audience ? `It primarily serves ${audience}.` : "",
         grant ? `This application targets ${grant.title} from ${grant.sponsor}.` : "",
       ]
@@ -2247,19 +2611,19 @@ export class ApplicationServices {
 
   private composeWorkspaceSectionContent(
     section: PlatformApplicationWorkspaceSection,
-    organization: PlatformOrganization | null,
+    organizationPrefill: PlatformOrganizationPrefill | null,
     grant: PlatformGrantCatalogEntry | null,
   ): string {
-    const organizationName = organization?.name ?? "The organization";
+    const organizationName = organizationPrefill?.organizationName ?? "The organization";
     if (section.key === "project_summary") {
       return `${organizationName} will use ${grant?.title ?? "the selected grant"} to expand project delivery, document measurable outcomes, and align the proposal with ${grant?.sponsor ?? "the funder"} priorities.`;
     }
 
     if (section.key === "need_statement") {
-      return `${organizationName} is positioned to address the stated need because ${organization?.missionStatement ?? "it has the relevant operating context"}. This section connects the need to a concrete delivery plan and measurable community outcomes.`;
+      return `${organizationName} is positioned to address the stated need because ${organizationPrefill?.missionStatement ?? "it has the relevant operating context"}. This section connects the need to a concrete delivery plan and measurable community outcomes.`;
     }
 
-    return section.content || this.prefillWorkspaceSection(section.key, organization, grant);
+    return section.content || this.prefillWorkspaceSection(section.key, organizationPrefill, grant);
   }
 
   private async getScenarioNameMap(

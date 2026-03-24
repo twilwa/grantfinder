@@ -153,12 +153,12 @@ async function upsertOrganization(
     annualOperatingBudget: string;
     strategicPriorities: string[];
     emailUpdatesEnabled: boolean;
-    personnel: Array<{
-      fullName: string;
-      roleTitle: string;
-      yearsExperience?: number | null;
-      email?: string | null;
-    }>;
+      personnel: Array<{
+        fullName: string;
+        roleTitle: string;
+        yearsExperience?: number | null;
+        email?: string | null;
+      }>;
   },
 ) {
   const response = await app.request("/api/organization", {
@@ -168,6 +168,47 @@ async function upsertOrganization(
       "content-type": "application/json",
     },
     body: JSON.stringify(organization),
+  });
+
+  const payload = await response.json();
+  return { response, payload } as const;
+}
+
+async function createOrganizationPersonnel(
+  app: ReturnType<typeof createApp>,
+  accessToken: string,
+  personnel: {
+    fullName: string;
+    roleTitle: string;
+    yearsExperience?: number | null;
+    email?: string | null;
+    platformAccessEnabled: boolean;
+    canManageInvites: boolean;
+  },
+) {
+  const response = await app.request("/api/organization/personnel", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(personnel),
+  });
+
+  const payload = await response.json();
+  return { response, payload } as const;
+}
+
+async function acceptOrganizationInvite(
+  app: ReturnType<typeof createApp>,
+  accessToken: string,
+  inviteId: string,
+) {
+  const response = await app.request(`/api/organization/invites/${inviteId}/accept`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+    },
   });
 
   const payload = await response.json();
@@ -431,6 +472,110 @@ test("requester can save a structured organization profile and see it in the wor
   });
 });
 
+test("organization invites create collaborator access and enforce invite permissions", async () => {
+  const app = createTestApp();
+
+  await createProfile(app, "browser_requester", {
+    name: "Owner",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+  await createProfile(app, "browser_requester_two", {
+    name: "Collaborator",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000003",
+    smartWalletAddress: "0x0000000000000000000000000000000000000303",
+  });
+
+  await upsertOrganization(app, "browser_requester", {
+    name: "Oak Harbor Community Labs",
+    website: "https://oakharbor.example",
+    registrationCountry: "United States",
+    registrationRegion: "California",
+    organizationType: "nonprofit",
+    operatingScope: "regional",
+    localOperatingAreas: ["Oakland", "Berkeley"],
+    missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+    programs: ["Robotics bootcamps", "Small business automation clinics"],
+    targetDemographics: ["low-income adults", "community college learners"],
+    thematicAreas: ["workforce development", "stem education", "economic mobility"],
+    annualOperatingBudget: "$500k-$1m",
+    strategicPriorities: ["equipment access", "employer placement", "grant readiness"],
+    emailUpdatesEnabled: true,
+    personnel: [],
+  });
+
+  const inviteResponse = await createOrganizationPersonnel(app, "browser_requester", {
+    fullName: "Collaborator",
+    roleTitle: "Grant Writer",
+    yearsExperience: 6,
+    email: "collaborator@oakharbor.example",
+    platformAccessEnabled: true,
+    canManageInvites: false,
+  });
+  const inviteId = inviteResponse.payload.personnel.invite.id as string;
+
+  const acceptResponse = await acceptOrganizationInvite(app, "browser_requester_two", inviteId);
+
+  const organizationResponse = await app.request("/api/organization", {
+    headers: {
+      authorization: "Bearer browser_requester_two",
+    },
+  });
+
+  const forbiddenInviteResponse = await createOrganizationPersonnel(app, "browser_requester_two", {
+    fullName: "Blocked Invite",
+    roleTitle: "Program Manager",
+    yearsExperience: 4,
+    email: "blocked@oakharbor.example",
+    platformAccessEnabled: true,
+    canManageInvites: false,
+  });
+
+  expect(inviteResponse.response.status).toBe(201);
+  expect(inviteResponse.payload.personnel).toMatchObject({
+    fullName: "Collaborator",
+    accessState: "invited",
+    platformAccessEnabled: true,
+    canManageInvites: false,
+    invite: {
+      id: inviteId,
+      invitePath: expect.stringContaining(inviteId),
+      acceptedAt: null,
+    },
+  });
+  expect(acceptResponse.response.status).toBe(200);
+  expect(acceptResponse.payload.personnel).toMatchObject({
+    fullName: "Collaborator",
+    accessState: "active",
+    userId: expect.any(String),
+    invite: {
+      id: inviteId,
+      acceptedAt: expect.any(String),
+    },
+  });
+  expect(organizationResponse.status).toBe(200);
+  expect(await organizationResponse.json()).toMatchObject({
+    organization: expect.objectContaining({
+      name: "Oak Harbor Community Labs",
+      personnel: [
+        expect.objectContaining({
+          fullName: "Collaborator",
+          accessState: "active",
+          canManageInvites: false,
+        }),
+      ],
+    }),
+  });
+  expect(forbiddenInviteResponse.response.status).toBe(403);
+  expect(forbiddenInviteResponse.payload).toMatchObject({
+    error: {
+      code: "forbidden",
+    },
+  });
+});
+
 test("requester can author scenarios, run research requests, manage tracked grants, and create proposal jobs", async () => {
   const app = createTestApp({
     researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
@@ -555,6 +700,162 @@ test("requester can author scenarios, run research requests, manage tracked gran
         queueState: "inactive",
       }),
     ]),
+  });
+});
+
+test("organization prefills are captured on research requests and application workspaces", async () => {
+  let capturedScenario: Record<string, unknown> | null = null;
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: Record<string, unknown> }) => {
+      capturedScenario = scenario;
+      return createResearchResult(String(scenario.id));
+    },
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+  await upsertOrganization(app, "browser_requester", {
+    name: "Oak Harbor Community Labs",
+    website: "https://oakharbor.example",
+    registrationCountry: "United States",
+    registrationRegion: "California",
+    organizationType: "nonprofit",
+    operatingScope: "regional",
+    localOperatingAreas: ["Oakland", "Berkeley"],
+    missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+    programs: ["Robotics bootcamps", "Small business automation clinics"],
+    targetDemographics: ["low-income adults", "community college learners"],
+    thematicAreas: ["workforce development", "stem education", "economic mobility"],
+    annualOperatingBudget: "$500k-$1m",
+    strategicPriorities: ["equipment access", "employer placement", "grant readiness"],
+    emailUpdatesEnabled: true,
+    personnel: [],
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  const workspaceResponse = await app.request("/api/application-workspaces", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      documentType: "loi",
+    }),
+  });
+  const workspacePayload = await workspaceResponse.json();
+
+  await upsertOrganization(app, "browser_requester", {
+    name: "Oak Harbor Community Labs",
+    website: "https://oakharbor.example",
+    registrationCountry: "United States",
+    registrationRegion: "California",
+    organizationType: "nonprofit",
+    operatingScope: "regional",
+    localOperatingAreas: ["Oakland", "Berkeley", "Richmond"],
+    missionStatement: "Updated mission statement that should not overwrite saved snapshots.",
+    programs: ["Robotics bootcamps", "Small business automation clinics"],
+    targetDemographics: ["low-income adults", "community college learners"],
+    thematicAreas: ["workforce development", "stem education", "economic mobility"],
+    annualOperatingBudget: "$500k-$1m",
+    strategicPriorities: ["equipment access", "employer placement", "grant readiness"],
+    emailUpdatesEnabled: true,
+    personnel: [],
+  });
+
+  const workspaceDetailResponse = await app.request(`/api/application-workspaces/${workspacePayload.workspace.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(requestResponse.status).toBe(201);
+  expect(requestPayload.request.organizationPrefill).toMatchObject({
+    organizationName: "Oak Harbor Community Labs",
+    missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+    localOperatingAreas: ["Oakland", "Berkeley"],
+  });
+  expect(runResponse.status).toBe(200);
+  expect(capturedScenario).toMatchObject({
+    organizationPrefill: {
+      organizationName: "Oak Harbor Community Labs",
+      missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+      localOperatingAreas: ["Oakland", "Berkeley"],
+    },
+  });
+  expect(workspaceResponse.status).toBe(201);
+  expect(workspacePayload.workspace).toMatchObject({
+    organizationPrefill: {
+      organizationName: "Oak Harbor Community Labs",
+      missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+    },
+    sections: [
+      expect.objectContaining({
+        key: "organization_profile",
+        content: expect.stringContaining("Oak Harbor Community Labs"),
+      }),
+      expect.objectContaining({
+        key: "need_statement",
+        content: "",
+      }),
+    ],
+  });
+  expect(workspaceDetailResponse.status).toBe(200);
+  expect(await workspaceDetailResponse.json()).toMatchObject({
+    workspace: {
+      id: workspacePayload.workspace.id,
+      organizationPrefill: {
+        organizationName: "Oak Harbor Community Labs",
+        missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+        localOperatingAreas: ["Oakland", "Berkeley"],
+      },
+      sections: expect.arrayContaining([
+        expect.objectContaining({
+          key: "organization_profile",
+          content: expect.stringContaining("Expand workforce access to robotics, automation, and technical training."),
+        }),
+      ]),
+    },
   });
 });
 
