@@ -321,6 +321,7 @@ bun run serve</pre>
             <ol>
               <li>Sign in from the dashboard with Privy.</li>
               <li>Complete the Grantfinder profile by choosing requester or specialist.</li>
+              <li>Requesters can save a structured organization profile for scout and application prefill.</li>
               <li>Mint an agent token if you need curl or JSON-RPC access.</li>
             </ol>
           </div>
@@ -340,7 +341,7 @@ bun run serve</pre>
   -H 'Authorization: Bearer &lt;agentToken&gt;' \\
   -H 'content-type: application/json' \\
   -d '{"scenarioId":"inverse-private-equity"}'</pre>
-            <p>Create a durable request by saving a custom scenario, creating a request, and then running that request so tracked grants appear in the workspace. The request detail view now keeps a live activity timeline and accepts steering notes during an active run.</p>
+            <p>Create a durable request by saving a custom scenario, creating a request, and then running that request so tracked grants and durable report artifacts appear in the workspace. The request detail view now keeps a live activity timeline and accepts steering notes during an active run.</p>
             <pre>curl -s ${escapeHtml(baseUrl)}/api/research/scenarios \\
   -H 'Authorization: Bearer &lt;agentToken&gt;' \\
   -H 'content-type: application/json' \\
@@ -369,7 +370,7 @@ X402_PAY_TO=${escapeHtml(x402.payTo)}</pre>
   -H 'Authorization: Bearer &lt;agentToken&gt;' \\
   -H 'content-type: application/json' \\
   -d '{"jsonrpc":"2.0","id":"jobs","method":"jobs.list","params":{}}'</pre>
-            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
+            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>organization.get</code>, <code>organization.upsert</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grantReports.list</code>, <code>catalog.grants.list</code>, <code>catalog.grants.get</code>, <code>catalog.grants.promote</code>, <code>catalog.grants.bookmark</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
           </div>
         </section>
       </section>`,
@@ -397,6 +398,8 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`POST /api/auth/profile\`
 - \`GET /api/auth/tokens\`
 - \`POST /api/auth/tokens\`
+- \`GET /api/organization\`
+- \`PUT /api/organization\`
 - \`GET /api/workspace\`
 - \`GET /api/research/scenarios\`
 - \`POST /api/research/scenarios\`
@@ -404,9 +407,22 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`GET /api/research/requests/:id\`
 - \`POST /api/research/requests/:id/run\`
 - \`POST /api/research/requests/:id/steer\`
+- \`GET /api/grant-reports\`
 - \`POST /api/research\`
 - \`PATCH /api/grants/:id\`
+- \`POST /api/grants/:id/catalog-entry\`
 - \`POST /api/grants/:id/proposal-job\`
+- \`GET /api/catalog/grants\`
+- \`GET /api/catalog/grants/:id\`
+- \`PUT /api/catalog/grants/:id/schema\`
+- \`PUT /api/catalog/grants/:id/bookmark\`
+- \`POST /api/application-templates\`
+- \`POST /api/application-workspaces\`
+- \`GET /api/application-workspaces/:id\`
+- \`POST /api/application-workspaces/:id/finalize\`
+- \`POST /api/application-workspaces/:id/sections/:sectionId/generate\`
+- \`POST /api/provider-connections\`
+- \`GET /api/agent-executions\`
 - \`GET /api/jobs\`
 - \`POST /api/jobs\`
 - \`POST /api/jobs/:id/offers\`
@@ -420,6 +436,8 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`auth.profile.upsert\`
 - \`auth.tokens.list\`
 - \`auth.tokens.create\`
+- \`organization.get\`
+- \`organization.upsert\`
 - \`workspace.get\`
 - \`research.scenarios.list\`
 - \`research.scenarios.create\`
@@ -428,6 +446,19 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`research.requests.run\`
 - \`research.requests.steer\`
 - \`research.run\`
+- \`grantReports.list\`
+- \`catalog.grants.list\`
+- \`catalog.grants.get\`
+- \`catalog.grants.promote\`
+- \`catalog.grants.bookmark\`
+- \`catalog.schemas.upsert\`
+- \`application.templates.create\`
+- \`application.workspaces.create\`
+- \`application.workspaces.get\`
+- \`application.workspaces.finalize\`
+- \`application.workspaces.generateSection\`
+- \`providerConnections.create\`
+- \`agentExecutions.list\`
 - \`grants.updateQueue\`
 - \`grants.createProposalJob\`
 - \`jobs.list\`
@@ -627,9 +658,53 @@ export function createApp(options: AppOptions = {}) {
     return c.json(await services.revokeAgentToken(user, c.req.param("id")));
   });
 
+  app.get("/api/organization", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getOrganization(user));
+  });
+
+  app.put("/api/organization", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      name: string;
+      website?: string | null;
+      registrationCountry: string;
+      registrationRegion?: string | null;
+      organizationType:
+        | "nonprofit"
+        | "fiscal_sponsor"
+        | "school"
+        | "government"
+        | "tribal_entity"
+        | "for_profit"
+        | "other";
+      operatingScope: "local" | "regional" | "national" | "international";
+      localOperatingAreas: string[];
+      missionStatement: string;
+      programs: string[];
+      targetDemographics: string[];
+      thematicAreas: string[];
+      annualOperatingBudget: string;
+      strategicPriorities: string[];
+      emailUpdatesEnabled: boolean;
+      personnel: Array<{
+        fullName: string;
+        roleTitle: string;
+        yearsExperience?: number | null;
+        email?: string | null;
+      }>;
+    }>(c.req.raw);
+    return c.json(await services.upsertOrganization(user, payload), 201);
+  });
+
   app.get("/api/workspace", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     return c.json(await services.getWorkspace(user));
+  });
+
+  app.get("/api/grant-reports", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listGrantReports(user));
   });
 
   app.get("/api/research/scenarios", async (c) => {
@@ -683,9 +758,123 @@ export function createApp(options: AppOptions = {}) {
     return c.json(await services.updateGrantQueueState(user, c.req.param("id"), payload.queueState));
   });
 
+  app.post("/api/grants/:id/catalog-entry", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.promoteGrantToCatalogEntry(user, c.req.param("id")), 201);
+  });
+
   app.post("/api/grants/:id/proposal-job", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     return c.json(await services.createProposalJobFromGrant(user, c.req.param("id")), 201);
+  });
+
+  app.get("/api/catalog/grants", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const bookmarked = new URL(c.req.url).searchParams.get("bookmarked") === "true";
+    return c.json(await services.listCatalogGrants(user, { bookmarked }));
+  });
+
+  app.get("/api/catalog/grants/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getCatalogGrant(user, c.req.param("id")));
+  });
+
+  app.put("/api/catalog/grants/:id/schema", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      name: string;
+      documentType: "grant_proposal" | "loi" | "budget_narrative" | "other";
+      sections: Array<{
+        key: string;
+        title: string;
+        stepName?: string | null;
+        prompt?: string | null;
+        examples?: string[];
+        validation?: {
+          minWords?: number | null;
+          maxWords?: number | null;
+        };
+      }>;
+    }>(c.req.raw);
+    return c.json(await services.upsertGrantApplicationSchema(user, c.req.param("id"), payload), 201);
+  });
+
+  app.put("/api/catalog/grants/:id/bookmark", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ bookmarked: boolean }>(c.req.raw);
+    return c.json(await services.setCatalogGrantBookmark(user, c.req.param("id"), Boolean(payload.bookmarked)));
+  });
+
+  app.post("/api/application-templates", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      name: string;
+      documentType: "grant_proposal" | "loi" | "budget_narrative" | "other";
+      sections: Array<{
+        key: string;
+        title: string;
+        stepName?: string | null;
+        prompt?: string | null;
+        examples?: string[];
+        validation?: {
+          minWords?: number | null;
+          maxWords?: number | null;
+        };
+      }>;
+    }>(c.req.raw);
+    return c.json(await services.createApplicationTemplate(user, payload), 201);
+  });
+
+  app.post("/api/application-workspaces", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      catalogGrantId?: string | null;
+      templateId?: string | null;
+      documentType: "grant_proposal" | "loi" | "budget_narrative" | "other";
+    }>(c.req.raw);
+    return c.json(await services.createApplicationWorkspace(user, payload), 201);
+  });
+
+  app.get("/api/application-workspaces/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getApplicationWorkspace(user, c.req.param("id")));
+  });
+
+  app.post("/api/application-workspaces/:id/finalize", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.finalizeApplicationWorkspace(user, c.req.param("id")));
+  });
+
+  app.post("/api/application-workspaces/:id/sections/:sectionId/generate", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = c.req.header("content-type")?.includes("application/json")
+      ? await parseJson<{ providerConnectionId?: string | null }>(c.req.raw)
+      : {};
+    return c.json(
+      await services.generateApplicationWorkspaceSection(
+        user,
+        c.req.param("id"),
+        c.req.param("sectionId"),
+        payload,
+      ),
+    );
+  });
+
+  app.post("/api/provider-connections", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      scope: "user" | "organization";
+      provider: string;
+      label: string;
+      authType: "byok" | "oauth";
+      allowedArtifactTypes: Array<"grant_catalog_entry" | "application_workspace" | "workspace_section">;
+    }>(c.req.raw);
+    return c.json(await services.createProviderConnection(user, payload), 201);
+  });
+
+  app.get("/api/agent-executions", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listAgentExecutions(user));
   });
 
   app.get("/api/jobs", async (c) => {
@@ -701,13 +890,25 @@ export function createApp(options: AppOptions = {}) {
 
   app.post("/api/jobs", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
-    const payload = await parseJson<{ title: string; description: string; fundingNeed: string }>(c.req.raw);
+    const payload = await parseJson<{
+      title: string;
+      description: string;
+      fundingNeed: string;
+      targetType?: "grant_catalog_entry" | "application_workspace" | "workspace_section" | null;
+      targetId?: string | null;
+      specialistRole?: "researcher" | "writer" | "reviewer" | "submission_specialist" | null;
+    }>(c.req.raw);
     return c.json(await services.createJob(user, payload), 201);
   });
 
   app.post("/api/jobs/:id/offers", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
-    const payload = await parseJson<{ message: string; amountUsd: string; payoutAddress: string }>(c.req.raw);
+    const payload = await parseJson<{
+      message: string;
+      amountUsd: string;
+      payoutAddress: string;
+      specialistRole?: "researcher" | "writer" | "reviewer" | "submission_specialist" | null;
+    }>(c.req.raw);
     return c.json(await services.createOffer(user, c.req.param("id"), payload), 201);
   });
 
@@ -783,6 +984,74 @@ export function createApp(options: AppOptions = {}) {
           });
           break;
         }
+        case "organization.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getOrganization(user);
+          break;
+        }
+        case "organization.upsert": {
+          const user = await services.authenticate(authToken);
+          result = await services.upsertOrganization(user, {
+            name: String(params.name ?? ""),
+            website: typeof params.website === "string" ? params.website : null,
+            registrationCountry: String(params.registrationCountry ?? ""),
+            registrationRegion:
+              typeof params.registrationRegion === "string" ? params.registrationRegion : null,
+            organizationType: String(params.organizationType ?? "") as
+              | "nonprofit"
+              | "fiscal_sponsor"
+              | "school"
+              | "government"
+              | "tribal_entity"
+              | "for_profit"
+              | "other",
+            operatingScope: String(params.operatingScope ?? "") as
+              | "local"
+              | "regional"
+              | "national"
+              | "international",
+            localOperatingAreas: Array.isArray(params.localOperatingAreas)
+              ? params.localOperatingAreas.map((value) => String(value))
+              : [],
+            missionStatement: String(params.missionStatement ?? ""),
+            programs: Array.isArray(params.programs) ? params.programs.map((value) => String(value)) : [],
+            targetDemographics: Array.isArray(params.targetDemographics)
+              ? params.targetDemographics.map((value) => String(value))
+              : [],
+            thematicAreas: Array.isArray(params.thematicAreas)
+              ? params.thematicAreas.map((value) => String(value))
+              : [],
+            annualOperatingBudget: String(params.annualOperatingBudget ?? ""),
+            strategicPriorities: Array.isArray(params.strategicPriorities)
+              ? params.strategicPriorities.map((value) => String(value))
+              : [],
+            emailUpdatesEnabled: Boolean(params.emailUpdatesEnabled),
+            personnel: Array.isArray(params.personnel)
+              ? params.personnel.map((entry) =>
+                  typeof entry === "object" && entry !== null
+                    ? {
+                        fullName: String((entry as Record<string, unknown>).fullName ?? ""),
+                        roleTitle: String((entry as Record<string, unknown>).roleTitle ?? ""),
+                        yearsExperience:
+                          typeof (entry as Record<string, unknown>).yearsExperience === "number"
+                            ? ((entry as Record<string, unknown>).yearsExperience as number)
+                            : null,
+                        email:
+                          typeof (entry as Record<string, unknown>).email === "string"
+                            ? ((entry as Record<string, unknown>).email as string)
+                            : null,
+                      }
+                    : {
+                        fullName: "",
+                        roleTitle: "",
+                        yearsExperience: null,
+                        email: null,
+                      },
+                )
+              : [],
+          });
+          break;
+        }
         case "workspace.get": {
           const user = await services.authenticate(authToken);
           result = await services.getWorkspace(user);
@@ -840,6 +1109,157 @@ export function createApp(options: AppOptions = {}) {
           result = await services.runResearch(user, String(params.scenarioId ?? ""));
           break;
         }
+        case "grantReports.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listGrantReports(user);
+          break;
+        }
+        case "catalog.grants.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listCatalogGrants(user, {
+            bookmarked: params.bookmarked === true,
+          });
+          break;
+        }
+        case "catalog.grants.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getCatalogGrant(user, String(params.grantId ?? ""));
+          break;
+        }
+        case "catalog.grants.promote": {
+          const user = await services.authenticate(authToken);
+          result = await services.promoteGrantToCatalogEntry(user, String(params.grantId ?? ""));
+          break;
+        }
+        case "catalog.grants.bookmark": {
+          const user = await services.authenticate(authToken);
+          result = await services.setCatalogGrantBookmark(
+            user,
+            String(params.grantId ?? ""),
+            Boolean(params.bookmarked),
+          );
+          break;
+        }
+        case "catalog.schemas.upsert": {
+          const user = await services.authenticate(authToken);
+          result = await services.upsertGrantApplicationSchema(user, String(params.grantId ?? ""), {
+            name: String(params.name ?? ""),
+            documentType: String(params.documentType ?? "") as
+              | "grant_proposal"
+              | "loi"
+              | "budget_narrative"
+              | "other",
+            sections: Array.isArray(params.sections)
+              ? params.sections.map((entry) => {
+                  const record = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+                  const validation =
+                    typeof record.validation === "object" && record.validation !== null
+                      ? (record.validation as Record<string, unknown>)
+                      : {};
+                  return {
+                    key: String(record.key ?? ""),
+                    title: String(record.title ?? ""),
+                    stepName: typeof record.stepName === "string" ? record.stepName : null,
+                    prompt: typeof record.prompt === "string" ? record.prompt : null,
+                    examples: Array.isArray(record.examples) ? record.examples.map((value) => String(value)) : [],
+                    validation: {
+                      minWords: typeof validation.minWords === "number" ? validation.minWords : null,
+                      maxWords: typeof validation.maxWords === "number" ? validation.maxWords : null,
+                    },
+                  };
+                })
+              : [],
+          });
+          break;
+        }
+        case "application.templates.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createApplicationTemplate(user, {
+            name: String(params.name ?? ""),
+            documentType: String(params.documentType ?? "") as
+              | "grant_proposal"
+              | "loi"
+              | "budget_narrative"
+              | "other",
+            sections: Array.isArray(params.sections)
+              ? params.sections.map((entry) => {
+                  const record = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+                  const validation =
+                    typeof record.validation === "object" && record.validation !== null
+                      ? (record.validation as Record<string, unknown>)
+                      : {};
+                  return {
+                    key: String(record.key ?? ""),
+                    title: String(record.title ?? ""),
+                    stepName: typeof record.stepName === "string" ? record.stepName : null,
+                    prompt: typeof record.prompt === "string" ? record.prompt : null,
+                    examples: Array.isArray(record.examples) ? record.examples.map((value) => String(value)) : [],
+                    validation: {
+                      minWords: typeof validation.minWords === "number" ? validation.minWords : null,
+                      maxWords: typeof validation.maxWords === "number" ? validation.maxWords : null,
+                    },
+                  };
+                })
+              : [],
+          });
+          break;
+        }
+        case "application.workspaces.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createApplicationWorkspace(user, {
+            catalogGrantId: typeof params.catalogGrantId === "string" ? params.catalogGrantId : null,
+            templateId: typeof params.templateId === "string" ? params.templateId : null,
+            documentType: String(params.documentType ?? "") as
+              | "grant_proposal"
+              | "loi"
+              | "budget_narrative"
+              | "other",
+          });
+          break;
+        }
+        case "application.workspaces.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getApplicationWorkspace(user, String(params.workspaceId ?? ""));
+          break;
+        }
+        case "application.workspaces.finalize": {
+          const user = await services.authenticate(authToken);
+          result = await services.finalizeApplicationWorkspace(user, String(params.workspaceId ?? ""));
+          break;
+        }
+        case "application.workspaces.generateSection": {
+          const user = await services.authenticate(authToken);
+          result = await services.generateApplicationWorkspaceSection(
+            user,
+            String(params.workspaceId ?? ""),
+            String(params.sectionId ?? ""),
+            {
+              providerConnectionId:
+                typeof params.providerConnectionId === "string" ? params.providerConnectionId : null,
+            },
+          );
+          break;
+        }
+        case "providerConnections.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProviderConnection(user, {
+            scope: String(params.scope ?? "") as "user" | "organization",
+            provider: String(params.provider ?? ""),
+            label: String(params.label ?? ""),
+            authType: String(params.authType ?? "") as "byok" | "oauth",
+            allowedArtifactTypes: Array.isArray(params.allowedArtifactTypes)
+              ? params.allowedArtifactTypes.map((value) => String(value)) as Array<
+                  "grant_catalog_entry" | "application_workspace" | "workspace_section"
+                >
+              : [],
+          });
+          break;
+        }
+        case "agentExecutions.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listAgentExecutions(user);
+          break;
+        }
         case "jobs.list": {
           await services.authenticate(authToken);
           result = await services.listJobs();
@@ -851,6 +1271,19 @@ export function createApp(options: AppOptions = {}) {
             title: String(params.title ?? ""),
             description: String(params.description ?? ""),
             fundingNeed: String(params.fundingNeed ?? ""),
+            targetType:
+              typeof params.targetType === "string"
+                ? (params.targetType as "grant_catalog_entry" | "application_workspace" | "workspace_section")
+                : null,
+            targetId: typeof params.targetId === "string" ? params.targetId : null,
+            specialistRole:
+              typeof params.specialistRole === "string"
+                ? (params.specialistRole as
+                    | "researcher"
+                    | "writer"
+                    | "reviewer"
+                    | "submission_specialist")
+                : null,
           });
           break;
         }
@@ -860,6 +1293,14 @@ export function createApp(options: AppOptions = {}) {
             message: String(params.message ?? ""),
             amountUsd: String(params.amountUsd ?? ""),
             payoutAddress: String(params.payoutAddress ?? ""),
+            specialistRole:
+              typeof params.specialistRole === "string"
+                ? (params.specialistRole as
+                    | "researcher"
+                    | "writer"
+                    | "reviewer"
+                    | "submission_specialist")
+                : null,
           });
           break;
         }

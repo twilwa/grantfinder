@@ -7,9 +7,19 @@ import { Pool, type QueryResult, type QueryResultRow } from "pg";
 
 import type {
   PlatformAgentToken,
+  PlatformAgentExecutionRecord,
+  PlatformAgentProviderConnection,
+  PlatformApplicationTemplate,
+  PlatformApplicationWorkspace,
+  PlatformGrantBookmark,
+  PlatformGrantApplicationSchema,
+  PlatformGrantCatalogEntry,
+  PlatformGrantReport,
   PlatformEngagement,
   PlatformJob,
   PlatformOffer,
+  PlatformOrganization,
+  PlatformOrganizationPersonnel,
   PlatformResearchActivity,
   PlatformPaymentRecord,
   PlatformResearchRequest,
@@ -55,6 +65,25 @@ export interface UpsertUserProfileInput {
   smartWalletAddress: string | null;
 }
 
+export interface UpsertOrganizationInput {
+  ownerUserId: string;
+  name: string;
+  website: string | null;
+  registrationCountry: string;
+  registrationRegion: string | null;
+  organizationType: PlatformOrganization["organizationType"];
+  operatingScope: PlatformOrganization["operatingScope"];
+  localOperatingAreas: string[];
+  missionStatement: string;
+  programs: string[];
+  targetDemographics: string[];
+  thematicAreas: string[];
+  annualOperatingBudget: string;
+  strategicPriorities: string[];
+  emailUpdatesEnabled: boolean;
+  personnel: PlatformOrganizationPersonnel[];
+}
+
 export interface CreateAgentTokenResult {
   token: PlatformAgentToken;
   secret: string;
@@ -93,6 +122,30 @@ function toUser(row: Record<string, unknown>): PlatformUser {
   };
 }
 
+function toOrganization(row: Record<string, unknown>): PlatformOrganization {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    name: String(row.name),
+    website: row.website ? String(row.website) : null,
+    registrationCountry: String(row.registration_country),
+    registrationRegion: row.registration_region ? String(row.registration_region) : null,
+    organizationType: String(row.organization_type) as PlatformOrganization["organizationType"],
+    operatingScope: String(row.operating_scope) as PlatformOrganization["operatingScope"],
+    localOperatingAreas: parseJsonText<string[]>(row.local_operating_areas_json, []),
+    missionStatement: String(row.mission_statement),
+    programs: parseJsonText<string[]>(row.programs_json, []),
+    targetDemographics: parseJsonText<string[]>(row.target_demographics_json, []),
+    thematicAreas: parseJsonText<string[]>(row.thematic_areas_json, []),
+    annualOperatingBudget: String(row.annual_operating_budget),
+    strategicPriorities: parseJsonText<string[]>(row.strategic_priorities_json, []),
+    emailUpdatesEnabled: Boolean(row.email_updates_enabled),
+    personnel: parseJsonText<PlatformOrganizationPersonnel[]>(row.personnel_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 function toAgentToken(row: Record<string, unknown>): PlatformAgentToken {
   return {
     id: String(row.id),
@@ -110,6 +163,25 @@ function toJob(row: Record<string, unknown>): PlatformJob {
     requesterId: String(row.requester_id),
     type: row.type === "grant_proposal" ? "grant_proposal" : "general",
     grantId: row.grant_id ? String(row.grant_id) : null,
+    targetType:
+      row.target_type === "application_workspace"
+        ? "application_workspace"
+        : row.target_type === "workspace_section"
+          ? "workspace_section"
+          : row.target_type === "grant_catalog_entry"
+            ? "grant_catalog_entry"
+            : null,
+    targetId: row.target_id ? String(row.target_id) : null,
+    specialistRole:
+      row.specialist_role === "researcher"
+        ? "researcher"
+        : row.specialist_role === "writer"
+          ? "writer"
+          : row.specialist_role === "reviewer"
+            ? "reviewer"
+            : row.specialist_role === "submission_specialist"
+              ? "submission_specialist"
+              : null,
     title: String(row.title),
     description: String(row.description),
     fundingNeed: String(row.funding_need),
@@ -123,6 +195,16 @@ function toOffer(row: Record<string, unknown>): PlatformOffer {
     id: String(row.id),
     jobId: String(row.job_id),
     specialistId: String(row.specialist_id),
+    specialistRole:
+      row.specialist_role === "researcher"
+        ? "researcher"
+        : row.specialist_role === "writer"
+          ? "writer"
+          : row.specialist_role === "reviewer"
+            ? "reviewer"
+            : row.specialist_role === "submission_specialist"
+              ? "submission_specialist"
+              : null,
     message: String(row.message),
     amountUsd: String(row.amount_usd),
     payoutAddress: String(row.payout_address),
@@ -155,6 +237,25 @@ function toEngagement(
     offerId: String(row.offer_id),
     requesterId: String(row.requester_id),
     specialistId: String(row.specialist_id),
+    targetType:
+      row.target_type === "application_workspace"
+        ? "application_workspace"
+        : row.target_type === "workspace_section"
+          ? "workspace_section"
+          : row.target_type === "grant_catalog_entry"
+            ? "grant_catalog_entry"
+            : null,
+    targetId: row.target_id ? String(row.target_id) : null,
+    specialistRole:
+      row.specialist_role === "researcher"
+        ? "researcher"
+        : row.specialist_role === "writer"
+          ? "writer"
+          : row.specialist_role === "reviewer"
+            ? "reviewer"
+            : row.specialist_role === "submission_specialist"
+              ? "submission_specialist"
+              : null,
     amountUsd: String(row.amount_usd),
     payoutAddress: String(row.payout_address),
     status: row.status === "funded" ? "funded" : "pending_funding",
@@ -247,6 +348,153 @@ function toTrackedGrant(row: Record<string, unknown>): PlatformTrackedGrant {
   };
 }
 
+function toGrantReport(row: Record<string, unknown>): PlatformGrantReport {
+  return {
+    id: String(row.id),
+    requestId: String(row.request_id),
+    requesterId: String(row.requester_id),
+    businessCaseId: String(row.business_case_id),
+    executiveSummary: String(row.executive_summary),
+    searchSummary: String(row.search_summary),
+    opportunities: parseJsonText(row.opportunities_json, []),
+    rejectedLeads: parseJsonText(row.rejected_leads_json, []),
+    nextActions: parseJsonText(row.next_actions_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toGrantCatalogEntry(row: Record<string, unknown>): PlatformGrantCatalogEntry {
+  return {
+    id: String(row.id),
+    createdByUserId: String(row.created_by_user_id),
+    sourceType:
+      row.source_type === "curated"
+        ? "curated"
+        : "promoted",
+    sourceGrantId: row.source_grant_id ? String(row.source_grant_id) : null,
+    sourceReportId: row.source_report_id ? String(row.source_report_id) : null,
+    title: String(row.title),
+    sponsor: String(row.sponsor),
+    fundingType: String(row.funding_type),
+    fitScore: Number(row.fit_score),
+    whyFit: String(row.why_fit),
+    eligibilityNotes: parseJsonText<string[]>(row.eligibility_notes_json, []),
+    amountSummary: String(row.amount_summary),
+    deadlineSummary: String(row.deadline_summary),
+    geography: String(row.geography),
+    status: String(row.status),
+    citations: parseJsonText<string[]>(row.citations_json, []),
+    nextActions: parseJsonText<string[]>(row.next_actions_json, []),
+    tags: parseJsonText<string[]>(row.tags_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toGrantBookmark(row: Record<string, unknown>): PlatformGrantBookmark {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    grantId: String(row.grant_catalog_entry_id),
+    createdAt: String(row.created_at),
+  };
+}
+
+function toGrantApplicationSchema(row: Record<string, unknown>): PlatformGrantApplicationSchema {
+  return {
+    id: String(row.id),
+    catalogGrantId: String(row.catalog_grant_id),
+    name: String(row.name),
+    documentType:
+      row.document_type === "loi"
+        ? "loi"
+        : row.document_type === "budget_narrative"
+          ? "budget_narrative"
+          : row.document_type === "other"
+            ? "other"
+            : "grant_proposal",
+    sections: parseJsonText(row.sections_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toApplicationTemplate(row: Record<string, unknown>): PlatformApplicationTemplate {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    name: String(row.name),
+    documentType:
+      row.document_type === "loi"
+        ? "loi"
+        : row.document_type === "budget_narrative"
+          ? "budget_narrative"
+          : row.document_type === "other"
+            ? "other"
+            : "grant_proposal",
+    sections: parseJsonText(row.sections_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toApplicationWorkspace(row: Record<string, unknown>): PlatformApplicationWorkspace {
+  return {
+    id: String(row.id),
+    requesterId: String(row.requester_id),
+    catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
+    templateId: row.template_id ? String(row.template_id) : null,
+    documentType:
+      row.document_type === "loi"
+        ? "loi"
+        : row.document_type === "budget_narrative"
+          ? "budget_narrative"
+          : row.document_type === "other"
+            ? "other"
+            : "grant_proposal",
+    title: String(row.title),
+    state: row.state === "proposal" ? "proposal" : "draft",
+    sections: parseJsonText(row.sections_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    finalizedAt: row.finalized_at ? String(row.finalized_at) : null,
+  };
+}
+
+function toAgentProviderConnection(row: Record<string, unknown>): PlatformAgentProviderConnection {
+  return {
+    id: String(row.id),
+    scope: row.scope === "organization" ? "organization" : "user",
+    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
+    organizationId: row.organization_id ? String(row.organization_id) : null,
+    provider: String(row.provider),
+    label: String(row.label),
+    authType: row.auth_type === "oauth" ? "oauth" : "byok",
+    allowedArtifactTypes: parseJsonText(row.allowed_artifact_types_json, []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toAgentExecutionRecord(row: Record<string, unknown>): PlatformAgentExecutionRecord {
+  return {
+    id: String(row.id),
+    actorUserId: String(row.actor_user_id),
+    providerConnectionId: String(row.provider_connection_id),
+    targetType:
+      row.target_type === "grant_catalog_entry"
+        ? "grant_catalog_entry"
+        : row.target_type === "application_workspace"
+          ? "application_workspace"
+          : "workspace_section",
+    targetId: String(row.target_id),
+    action: String(row.action),
+    outputText: String(row.output_text),
+    createdAt: String(row.created_at),
+  };
+}
+
 class MemoryStore {
   private readonly state: PlatformState;
   private readonly agentTokenSecrets = new Map<string, StoredAgentToken>();
@@ -293,6 +541,62 @@ class MemoryStore {
 
     this.state.users.push(user);
     return structuredClone(user);
+  }
+
+  async findOrganizationByOwnerUserId(ownerUserId: string): Promise<PlatformOrganization | null> {
+    return this.state.organizations.find((organization) => organization.ownerUserId === ownerUserId) ?? null;
+  }
+
+  async upsertOrganization(input: UpsertOrganizationInput): Promise<PlatformOrganization> {
+    const existing = this.state.organizations.find(
+      (organization) => organization.ownerUserId === input.ownerUserId,
+    );
+    const timestamp = now();
+
+    if (existing) {
+      existing.name = input.name;
+      existing.website = input.website;
+      existing.registrationCountry = input.registrationCountry;
+      existing.registrationRegion = input.registrationRegion;
+      existing.organizationType = input.organizationType;
+      existing.operatingScope = input.operatingScope;
+      existing.localOperatingAreas = [...input.localOperatingAreas];
+      existing.missionStatement = input.missionStatement;
+      existing.programs = [...input.programs];
+      existing.targetDemographics = [...input.targetDemographics];
+      existing.thematicAreas = [...input.thematicAreas];
+      existing.annualOperatingBudget = input.annualOperatingBudget;
+      existing.strategicPriorities = [...input.strategicPriorities];
+      existing.emailUpdatesEnabled = input.emailUpdatesEnabled;
+      existing.personnel = structuredClone(input.personnel);
+      existing.updatedAt = timestamp;
+      return structuredClone(existing);
+    }
+
+    const organization: PlatformOrganization = {
+      id: makeId("organization"),
+      ownerUserId: input.ownerUserId,
+      name: input.name,
+      website: input.website,
+      registrationCountry: input.registrationCountry,
+      registrationRegion: input.registrationRegion,
+      organizationType: input.organizationType,
+      operatingScope: input.operatingScope,
+      localOperatingAreas: [...input.localOperatingAreas],
+      missionStatement: input.missionStatement,
+      programs: [...input.programs],
+      targetDemographics: [...input.targetDemographics],
+      thematicAreas: [...input.thematicAreas],
+      annualOperatingBudget: input.annualOperatingBudget,
+      strategicPriorities: [...input.strategicPriorities],
+      emailUpdatesEnabled: input.emailUpdatesEnabled,
+      personnel: structuredClone(input.personnel),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    this.state.organizations.push(organization);
+    return structuredClone(organization);
   }
 
   async createAgentToken(userId: string, label: string): Promise<CreateAgentTokenResult> {
@@ -394,6 +698,9 @@ class MemoryStore {
       offerId: offer.id,
       requesterId,
       specialistId: offer.specialistId,
+      targetType: job.targetType,
+      targetId: job.targetId,
+      specialistRole: offer.specialistRole ?? job.specialistRole,
       amountUsd: offer.amountUsd,
       payoutAddress: offer.payoutAddress,
       status: "pending_funding",
@@ -477,6 +784,132 @@ class MemoryStore {
     this.state.trackedGrants[index] = structuredClone(grant);
     return structuredClone(grant);
   }
+
+  async findGrantReportByRequestId(requestId: string): Promise<PlatformGrantReport | null> {
+    return this.state.grantReports.find((report) => report.requestId === requestId) ?? null;
+  }
+
+  async upsertGrantReport(report: PlatformGrantReport): Promise<PlatformGrantReport> {
+    const index = this.state.grantReports.findIndex((candidate) => candidate.requestId === report.requestId);
+    if (index === -1) {
+      this.state.grantReports.push(structuredClone(report));
+      return structuredClone(report);
+    }
+
+    this.state.grantReports[index] = structuredClone(report);
+    return structuredClone(report);
+  }
+
+  async findGrantCatalogEntryById(grantId: string): Promise<PlatformGrantCatalogEntry | null> {
+    return this.state.grantCatalogEntries.find((grant) => grant.id === grantId) ?? null;
+  }
+
+  async findGrantCatalogEntryBySourceGrantId(
+    sourceGrantId: string,
+  ): Promise<PlatformGrantCatalogEntry | null> {
+    return this.state.grantCatalogEntries.find((grant) => grant.sourceGrantId === sourceGrantId) ?? null;
+  }
+
+  async saveGrantCatalogEntry(grant: PlatformGrantCatalogEntry): Promise<PlatformGrantCatalogEntry> {
+    const index = this.state.grantCatalogEntries.findIndex((candidate) => candidate.id === grant.id);
+    if (index === -1) {
+      this.state.grantCatalogEntries.push(structuredClone(grant));
+      return structuredClone(grant);
+    }
+
+    this.state.grantCatalogEntries[index] = structuredClone(grant);
+    return structuredClone(grant);
+  }
+
+  async setGrantBookmark(userId: string, grantId: string, bookmarked: boolean): Promise<boolean> {
+    const index = this.state.grantBookmarks.findIndex(
+      (bookmark) => bookmark.userId === userId && bookmark.grantId === grantId,
+    );
+
+    if (bookmarked) {
+      if (index === -1) {
+        this.state.grantBookmarks.push({
+          id: makeId("bookmark"),
+          userId,
+          grantId,
+          createdAt: now(),
+        });
+      }
+      return true;
+    }
+
+    if (index !== -1) {
+      this.state.grantBookmarks.splice(index, 1);
+    }
+
+    return false;
+  }
+
+  async findGrantApplicationSchemaByCatalogGrantId(
+    catalogGrantId: string,
+  ): Promise<PlatformGrantApplicationSchema | null> {
+    return this.state.grantApplicationSchemas.find((schema) => schema.catalogGrantId === catalogGrantId) ?? null;
+  }
+
+  async upsertGrantApplicationSchema(
+    schema: PlatformGrantApplicationSchema,
+  ): Promise<PlatformGrantApplicationSchema> {
+    const index = this.state.grantApplicationSchemas.findIndex(
+      (candidate) => candidate.catalogGrantId === schema.catalogGrantId,
+    );
+    if (index === -1) {
+      this.state.grantApplicationSchemas.push(structuredClone(schema));
+      return structuredClone(schema);
+    }
+
+    this.state.grantApplicationSchemas[index] = structuredClone(schema);
+    return structuredClone(schema);
+  }
+
+  async createApplicationTemplate(template: PlatformApplicationTemplate): Promise<PlatformApplicationTemplate> {
+    this.state.applicationTemplates.push(structuredClone(template));
+    return structuredClone(template);
+  }
+
+  async findApplicationTemplateById(templateId: string): Promise<PlatformApplicationTemplate | null> {
+    return this.state.applicationTemplates.find((template) => template.id === templateId) ?? null;
+  }
+
+  async createApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    this.state.applicationWorkspaces.push(structuredClone(workspace));
+    return structuredClone(workspace);
+  }
+
+  async findApplicationWorkspaceById(workspaceId: string): Promise<PlatformApplicationWorkspace | null> {
+    return this.state.applicationWorkspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+  }
+
+  async saveApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    const index = this.state.applicationWorkspaces.findIndex((candidate) => candidate.id === workspace.id);
+    if (index === -1) {
+      this.state.applicationWorkspaces.push(structuredClone(workspace));
+      return structuredClone(workspace);
+    }
+
+    this.state.applicationWorkspaces[index] = structuredClone(workspace);
+    return structuredClone(workspace);
+  }
+
+  async createAgentProviderConnection(
+    connection: PlatformAgentProviderConnection,
+  ): Promise<PlatformAgentProviderConnection> {
+    this.state.agentProviderConnections.push(structuredClone(connection));
+    return structuredClone(connection);
+  }
+
+  async findAgentProviderConnectionById(connectionId: string): Promise<PlatformAgentProviderConnection | null> {
+    return this.state.agentProviderConnections.find((connection) => connection.id === connectionId) ?? null;
+  }
+
+  async createAgentExecutionRecord(record: PlatformAgentExecutionRecord): Promise<PlatformAgentExecutionRecord> {
+    this.state.agentExecutionRecords.push(structuredClone(record));
+    return structuredClone(record);
+  }
 }
 
 class PostgresStore {
@@ -488,18 +921,48 @@ class PostgresStore {
 
   async readState(): Promise<PlatformState> {
     await this.ensureSchema();
-    const [users, agentTokens, jobs, offers, engagements, payments, researchScenarios, researchRequests, trackedGrants] =
+    const [
+      users,
+      organizations,
+      agentTokens,
+      jobs,
+      offers,
+      engagements,
+      payments,
+      researchScenarios,
+      researchRequests,
+      trackedGrants,
+      grantReports,
+      grantCatalogEntries,
+      grantBookmarks,
+      grantApplicationSchemas,
+      applicationTemplates,
+      applicationWorkspaces,
+      agentProviderConnections,
+      agentExecutionRecords,
+    ] =
       await Promise.all([
-      this.database.query("select * from users order by created_at desc"),
-      this.database.query("select id, user_id, label, created_at, last_used_at, revoked_at from agent_tokens order by created_at desc"),
-      this.database.query("select * from jobs order by created_at desc"),
-      this.database.query("select * from offers order by created_at desc"),
-      this.database.query("select * from engagements order by created_at desc"),
-      this.database.query("select * from payments"),
-      this.database.query("select * from research_scenarios order by created_at desc"),
-      this.database.query("select * from research_requests order by created_at desc"),
-      this.database.query("select * from tracked_grants order by created_at desc"),
-    ]);
+        this.database.query("select * from users order by created_at desc"),
+        this.database.query("select * from organizations order by created_at desc"),
+        this.database.query(
+          "select id, user_id, label, created_at, last_used_at, revoked_at from agent_tokens order by created_at desc",
+        ),
+        this.database.query("select * from jobs order by created_at desc"),
+        this.database.query("select * from offers order by created_at desc"),
+        this.database.query("select * from engagements order by created_at desc"),
+        this.database.query("select * from payments"),
+        this.database.query("select * from research_scenarios order by created_at desc"),
+        this.database.query("select * from research_requests order by created_at desc"),
+        this.database.query("select * from tracked_grants order by created_at desc"),
+        this.database.query("select * from grant_reports order by created_at desc"),
+        this.database.query("select * from grant_catalog_entries order by created_at desc"),
+        this.database.query("select * from grant_bookmarks order by created_at desc"),
+        this.database.query("select * from grant_application_schemas order by created_at desc"),
+        this.database.query("select * from application_templates order by created_at desc"),
+        this.database.query("select * from application_workspaces order by created_at desc"),
+        this.database.query("select * from agent_provider_connections order by created_at desc"),
+        this.database.query("select * from agent_execution_records order by created_at desc"),
+      ]);
 
     const paymentsByEngagement = new Map<string, PlatformPaymentRecord>();
     for (const row of payments.rows as Record<string, unknown>[]) {
@@ -508,6 +971,7 @@ class PostgresStore {
 
     return {
       users: (users.rows as Record<string, unknown>[]).map(toUser),
+      organizations: (organizations.rows as Record<string, unknown>[]).map(toOrganization),
       agentTokens: (agentTokens.rows as Record<string, unknown>[]).map(toAgentToken),
       jobs: (jobs.rows as Record<string, unknown>[]).map(toJob),
       offers: (offers.rows as Record<string, unknown>[]).map(toOffer),
@@ -517,6 +981,22 @@ class PostgresStore {
       researchScenarios: (researchScenarios.rows as Record<string, unknown>[]).map(toResearchScenario),
       researchRequests: (researchRequests.rows as Record<string, unknown>[]).map(toResearchRequest),
       trackedGrants: (trackedGrants.rows as Record<string, unknown>[]).map(toTrackedGrant),
+      grantReports: (grantReports.rows as Record<string, unknown>[]).map(toGrantReport),
+      grantCatalogEntries: (grantCatalogEntries.rows as Record<string, unknown>[]).map(toGrantCatalogEntry),
+      grantBookmarks: (grantBookmarks.rows as Record<string, unknown>[]).map(toGrantBookmark),
+      grantApplicationSchemas: (grantApplicationSchemas.rows as Record<string, unknown>[]).map(
+        toGrantApplicationSchema,
+      ),
+      applicationTemplates: (applicationTemplates.rows as Record<string, unknown>[]).map(toApplicationTemplate),
+      applicationWorkspaces: (applicationWorkspaces.rows as Record<string, unknown>[]).map(
+        toApplicationWorkspace,
+      ),
+      agentProviderConnections: (agentProviderConnections.rows as Record<string, unknown>[]).map(
+        toAgentProviderConnection,
+      ),
+      agentExecutionRecords: (agentExecutionRecords.rows as Record<string, unknown>[]).map(
+        toAgentExecutionRecord,
+      ),
     };
   }
 
@@ -566,6 +1046,87 @@ class PostgresStore {
     );
 
     return toUser(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findOrganizationByOwnerUserId(ownerUserId: string): Promise<PlatformOrganization | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from organizations where owner_user_id = $1 limit 1",
+      [ownerUserId],
+    );
+    return result.rows[0] ? toOrganization(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async upsertOrganization(input: UpsertOrganizationInput): Promise<PlatformOrganization> {
+    await this.ensureSchema();
+    const timestamp = now();
+    const result = await this.database.query(
+      `insert into organizations (
+        id,
+        owner_user_id,
+        name,
+        website,
+        registration_country,
+        registration_region,
+        organization_type,
+        operating_scope,
+        local_operating_areas_json,
+        mission_statement,
+        programs_json,
+        target_demographics_json,
+        thematic_areas_json,
+        annual_operating_budget,
+        strategic_priorities_json,
+        email_updates_enabled,
+        personnel_json,
+        created_at,
+        updated_at
+      ) values (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18, $18
+      )
+      on conflict (owner_user_id)
+      do update set
+        name = excluded.name,
+        website = excluded.website,
+        registration_country = excluded.registration_country,
+        registration_region = excluded.registration_region,
+        organization_type = excluded.organization_type,
+        operating_scope = excluded.operating_scope,
+        local_operating_areas_json = excluded.local_operating_areas_json,
+        mission_statement = excluded.mission_statement,
+        programs_json = excluded.programs_json,
+        target_demographics_json = excluded.target_demographics_json,
+        thematic_areas_json = excluded.thematic_areas_json,
+        annual_operating_budget = excluded.annual_operating_budget,
+        strategic_priorities_json = excluded.strategic_priorities_json,
+        email_updates_enabled = excluded.email_updates_enabled,
+        personnel_json = excluded.personnel_json,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        makeId("organization"),
+        input.ownerUserId,
+        input.name,
+        input.website,
+        input.registrationCountry,
+        input.registrationRegion,
+        input.organizationType,
+        input.operatingScope,
+        JSON.stringify(input.localOperatingAreas),
+        input.missionStatement,
+        JSON.stringify(input.programs),
+        JSON.stringify(input.targetDemographics),
+        JSON.stringify(input.thematicAreas),
+        input.annualOperatingBudget,
+        JSON.stringify(input.strategicPriorities),
+        input.emailUpdatesEnabled,
+        JSON.stringify(input.personnel),
+        timestamp,
+      ],
+    );
+
+    return toOrganization(result.rows[0] as Record<string, unknown>);
   }
 
   async createAgentToken(userId: string, label: string): Promise<CreateAgentTokenResult> {
@@ -645,14 +1206,30 @@ class PostgresStore {
   async createJob(job: PlatformJob): Promise<PlatformJob> {
     await this.ensureSchema();
     const result = await this.database.query(
-      `insert into jobs (id, requester_id, type, grant_id, title, description, funding_need, status, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `insert into jobs (
+        id,
+        requester_id,
+        type,
+        grant_id,
+        target_type,
+        target_id,
+        specialist_role,
+        title,
+        description,
+        funding_need,
+        status,
+        created_at
+      )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        returning *`,
       [
         job.id,
         job.requesterId,
         job.type,
         job.grantId,
+        job.targetType,
+        job.targetId,
+        job.specialistRole,
         job.title,
         job.description,
         job.fundingNeed,
@@ -677,18 +1254,20 @@ class PostgresStore {
         id,
         job_id,
         specialist_id,
+        specialist_role,
         message,
         amount_usd,
         payout_address,
         status,
         created_at,
         accepted_at
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       returning *`,
       [
         offer.id,
         offer.jobId,
         offer.specialistId,
+        offer.specialistRole,
         offer.message,
         offer.amountUsd,
         offer.payoutAddress,
@@ -757,13 +1336,28 @@ class PostgresStore {
           offer_id,
           requester_id,
           specialist_id,
+          target_type,
+          target_id,
+          specialist_role,
           amount_usd,
           payout_address,
           status,
           created_at,
           funded_at
-        ) values ($1, $2, $3, $4, $5, $6, $7, 'pending_funding', $8, null)`,
-        [engagementId, job.id, offer.id, requesterId, offer.specialistId, offer.amountUsd, offer.payoutAddress, now()],
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending_funding', $11, null)`,
+        [
+          engagementId,
+          job.id,
+          offer.id,
+          requesterId,
+          offer.specialistId,
+          job.targetType,
+          job.targetId,
+          offer.specialistRole ?? job.specialistRole,
+          offer.amountUsd,
+          offer.payoutAddress,
+          now(),
+        ],
       );
 
       const engagement = await this.loadEngagementFromClient(client, engagementId);
@@ -1075,6 +1669,397 @@ class PostgresStore {
     return toTrackedGrant(result.rows[0] as Record<string, unknown>);
   }
 
+  async findGrantReportByRequestId(requestId: string): Promise<PlatformGrantReport | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from grant_reports where request_id = $1 limit 1",
+      [requestId],
+    );
+    return result.rows[0] ? toGrantReport(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async upsertGrantReport(report: PlatformGrantReport): Promise<PlatformGrantReport> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into grant_reports (
+        id,
+        request_id,
+        requester_id,
+        business_case_id,
+        executive_summary,
+        search_summary,
+        opportunities_json,
+        rejected_leads_json,
+        next_actions_json,
+        created_at,
+        updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      on conflict (request_id)
+      do update set
+        requester_id = excluded.requester_id,
+        business_case_id = excluded.business_case_id,
+        executive_summary = excluded.executive_summary,
+        search_summary = excluded.search_summary,
+        opportunities_json = excluded.opportunities_json,
+        rejected_leads_json = excluded.rejected_leads_json,
+        next_actions_json = excluded.next_actions_json,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        report.id,
+        report.requestId,
+        report.requesterId,
+        report.businessCaseId,
+        report.executiveSummary,
+        report.searchSummary,
+        JSON.stringify(report.opportunities),
+        JSON.stringify(report.rejectedLeads),
+        JSON.stringify(report.nextActions),
+        report.createdAt,
+        report.updatedAt,
+      ],
+    );
+    return toGrantReport(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findGrantCatalogEntryById(grantId: string): Promise<PlatformGrantCatalogEntry | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from grant_catalog_entries where id = $1 limit 1",
+      [grantId],
+    );
+    return result.rows[0] ? toGrantCatalogEntry(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async findGrantCatalogEntryBySourceGrantId(
+    sourceGrantId: string,
+  ): Promise<PlatformGrantCatalogEntry | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from grant_catalog_entries where source_grant_id = $1 limit 1",
+      [sourceGrantId],
+    );
+    return result.rows[0] ? toGrantCatalogEntry(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async saveGrantCatalogEntry(grant: PlatformGrantCatalogEntry): Promise<PlatformGrantCatalogEntry> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into grant_catalog_entries (
+        id,
+        created_by_user_id,
+        source_type,
+        source_grant_id,
+        source_report_id,
+        title,
+        sponsor,
+        funding_type,
+        fit_score,
+        why_fit,
+        eligibility_notes_json,
+        amount_summary,
+        deadline_summary,
+        geography,
+        status,
+        citations_json,
+        next_actions_json,
+        tags_json,
+        created_at,
+        updated_at
+      ) values (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+      )
+      on conflict (id)
+      do update set
+        created_by_user_id = excluded.created_by_user_id,
+        source_type = excluded.source_type,
+        source_grant_id = excluded.source_grant_id,
+        source_report_id = excluded.source_report_id,
+        title = excluded.title,
+        sponsor = excluded.sponsor,
+        funding_type = excluded.funding_type,
+        fit_score = excluded.fit_score,
+        why_fit = excluded.why_fit,
+        eligibility_notes_json = excluded.eligibility_notes_json,
+        amount_summary = excluded.amount_summary,
+        deadline_summary = excluded.deadline_summary,
+        geography = excluded.geography,
+        status = excluded.status,
+        citations_json = excluded.citations_json,
+        next_actions_json = excluded.next_actions_json,
+        tags_json = excluded.tags_json,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        grant.id,
+        grant.createdByUserId,
+        grant.sourceType,
+        grant.sourceGrantId,
+        grant.sourceReportId,
+        grant.title,
+        grant.sponsor,
+        grant.fundingType,
+        grant.fitScore,
+        grant.whyFit,
+        JSON.stringify(grant.eligibilityNotes),
+        grant.amountSummary,
+        grant.deadlineSummary,
+        grant.geography,
+        grant.status,
+        JSON.stringify(grant.citations),
+        JSON.stringify(grant.nextActions),
+        JSON.stringify(grant.tags),
+        grant.createdAt,
+        grant.updatedAt,
+      ],
+    );
+    return toGrantCatalogEntry(result.rows[0] as Record<string, unknown>);
+  }
+
+  async setGrantBookmark(userId: string, grantId: string, bookmarked: boolean): Promise<boolean> {
+    await this.ensureSchema();
+
+    if (bookmarked) {
+      await this.database.query(
+        `insert into grant_bookmarks (id, user_id, grant_catalog_entry_id, created_at)
+         values ($1, $2, $3, $4)
+         on conflict (user_id, grant_catalog_entry_id) do nothing`,
+        [makeId("bookmark"), userId, grantId, now()],
+      );
+      return true;
+    }
+
+    await this.database.query(
+      "delete from grant_bookmarks where user_id = $1 and grant_catalog_entry_id = $2",
+      [userId, grantId],
+    );
+    return false;
+  }
+
+  async findGrantApplicationSchemaByCatalogGrantId(
+    catalogGrantId: string,
+  ): Promise<PlatformGrantApplicationSchema | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from grant_application_schemas where catalog_grant_id = $1 limit 1",
+      [catalogGrantId],
+    );
+    return result.rows[0] ? toGrantApplicationSchema(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async upsertGrantApplicationSchema(
+    schema: PlatformGrantApplicationSchema,
+  ): Promise<PlatformGrantApplicationSchema> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into grant_application_schemas (
+        id,
+        catalog_grant_id,
+        name,
+        document_type,
+        sections_json,
+        created_at,
+        updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7)
+      on conflict (catalog_grant_id)
+      do update set
+        name = excluded.name,
+        document_type = excluded.document_type,
+        sections_json = excluded.sections_json,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        schema.id,
+        schema.catalogGrantId,
+        schema.name,
+        schema.documentType,
+        JSON.stringify(schema.sections),
+        schema.createdAt,
+        schema.updatedAt,
+      ],
+    );
+    return toGrantApplicationSchema(result.rows[0] as Record<string, unknown>);
+  }
+
+  async createApplicationTemplate(template: PlatformApplicationTemplate): Promise<PlatformApplicationTemplate> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into application_templates (
+        id,
+        owner_user_id,
+        name,
+        document_type,
+        sections_json,
+        created_at,
+        updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7)
+      returning *`,
+      [
+        template.id,
+        template.ownerUserId,
+        template.name,
+        template.documentType,
+        JSON.stringify(template.sections),
+        template.createdAt,
+        template.updatedAt,
+      ],
+    );
+    return toApplicationTemplate(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findApplicationTemplateById(templateId: string): Promise<PlatformApplicationTemplate | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from application_templates where id = $1 limit 1",
+      [templateId],
+    );
+    return result.rows[0] ? toApplicationTemplate(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async createApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into application_workspaces (
+        id,
+        requester_id,
+        catalog_grant_id,
+        template_id,
+        document_type,
+        title,
+        state,
+        sections_json,
+        created_at,
+        updated_at,
+        finalized_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      returning *`,
+      [
+        workspace.id,
+        workspace.requesterId,
+        workspace.catalogGrantId,
+        workspace.templateId,
+        workspace.documentType,
+        workspace.title,
+        workspace.state,
+        JSON.stringify(workspace.sections),
+        workspace.createdAt,
+        workspace.updatedAt,
+        workspace.finalizedAt,
+      ],
+    );
+    return toApplicationWorkspace(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findApplicationWorkspaceById(workspaceId: string): Promise<PlatformApplicationWorkspace | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from application_workspaces where id = $1 limit 1",
+      [workspaceId],
+    );
+    return result.rows[0] ? toApplicationWorkspace(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async saveApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `update application_workspaces
+       set catalog_grant_id = $2,
+           template_id = $3,
+           document_type = $4,
+           title = $5,
+           state = $6,
+           sections_json = $7,
+           updated_at = $8,
+           finalized_at = $9
+       where id = $1
+       returning *`,
+      [
+        workspace.id,
+        workspace.catalogGrantId,
+        workspace.templateId,
+        workspace.documentType,
+        workspace.title,
+        workspace.state,
+        JSON.stringify(workspace.sections),
+        workspace.updatedAt,
+        workspace.finalizedAt,
+      ],
+    );
+    return toApplicationWorkspace(result.rows[0] as Record<string, unknown>);
+  }
+
+  async createAgentProviderConnection(
+    connection: PlatformAgentProviderConnection,
+  ): Promise<PlatformAgentProviderConnection> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into agent_provider_connections (
+        id,
+        scope,
+        owner_user_id,
+        organization_id,
+        provider,
+        label,
+        auth_type,
+        allowed_artifact_types_json,
+        created_at,
+        updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      returning *`,
+      [
+        connection.id,
+        connection.scope,
+        connection.ownerUserId,
+        connection.organizationId,
+        connection.provider,
+        connection.label,
+        connection.authType,
+        JSON.stringify(connection.allowedArtifactTypes),
+        connection.createdAt,
+        connection.updatedAt,
+      ],
+    );
+    return toAgentProviderConnection(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findAgentProviderConnectionById(connectionId: string): Promise<PlatformAgentProviderConnection | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from agent_provider_connections where id = $1 limit 1",
+      [connectionId],
+    );
+    return result.rows[0] ? toAgentProviderConnection(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async createAgentExecutionRecord(record: PlatformAgentExecutionRecord): Promise<PlatformAgentExecutionRecord> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into agent_execution_records (
+        id,
+        actor_user_id,
+        provider_connection_id,
+        target_type,
+        target_id,
+        action,
+        output_text,
+        created_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+      returning *`,
+      [
+        record.id,
+        record.actorUserId,
+        record.providerConnectionId,
+        record.targetType,
+        record.targetId,
+        record.action,
+        record.outputText,
+        record.createdAt,
+      ],
+    );
+    return toAgentExecutionRecord(result.rows[0] as Record<string, unknown>);
+  }
+
   private async ensureSchema(): Promise<void> {
     let schemaReady = schemaCache.get(this.database as object);
     if (!schemaReady) {
@@ -1110,11 +2095,37 @@ class PostgresStore {
       )
     `);
     await this.database.query(`
+      create table if not exists organizations (
+        id text primary key,
+        owner_user_id text not null unique references users (id) on delete cascade,
+        name text not null,
+        website text,
+        registration_country text not null,
+        registration_region text,
+        organization_type text not null,
+        operating_scope text not null,
+        local_operating_areas_json text not null default '[]',
+        mission_statement text not null,
+        programs_json text not null default '[]',
+        target_demographics_json text not null default '[]',
+        thematic_areas_json text not null default '[]',
+        annual_operating_budget text not null,
+        strategic_priorities_json text not null default '[]',
+        email_updates_enabled boolean not null default false,
+        personnel_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
       create table if not exists jobs (
         id text primary key,
         requester_id text not null references users (id) on delete cascade,
         type text not null default 'general' check (type in ('general', 'grant_proposal')),
         grant_id text,
+        target_type text,
+        target_id text,
+        specialist_role text,
         title text not null,
         description text not null,
         funding_need text not null,
@@ -1129,10 +2140,20 @@ class PostgresStore {
       alter table jobs add column if not exists grant_id text
     `);
     await this.database.query(`
+      alter table jobs add column if not exists target_type text
+    `);
+    await this.database.query(`
+      alter table jobs add column if not exists target_id text
+    `);
+    await this.database.query(`
+      alter table jobs add column if not exists specialist_role text
+    `);
+    await this.database.query(`
       create table if not exists offers (
         id text primary key,
         job_id text not null references jobs (id) on delete cascade,
         specialist_id text not null references users (id) on delete cascade,
+        specialist_role text,
         message text not null,
         amount_usd text not null,
         payout_address text not null,
@@ -1142,18 +2163,33 @@ class PostgresStore {
       )
     `);
     await this.database.query(`
+      alter table offers add column if not exists specialist_role text
+    `);
+    await this.database.query(`
       create table if not exists engagements (
         id text primary key,
         job_id text not null references jobs (id) on delete cascade,
         offer_id text not null unique references offers (id) on delete cascade,
         requester_id text not null references users (id) on delete cascade,
         specialist_id text not null references users (id) on delete cascade,
+        target_type text,
+        target_id text,
+        specialist_role text,
         amount_usd text not null,
         payout_address text not null,
         status text not null check (status in ('pending_funding', 'funded')),
         created_at text not null,
         funded_at text
       )
+    `);
+    await this.database.query(`
+      alter table engagements add column if not exists target_type text
+    `);
+    await this.database.query(`
+      alter table engagements add column if not exists target_id text
+    `);
+    await this.database.query(`
+      alter table engagements add column if not exists specialist_role text
     `);
     await this.database.query(`
       create table if not exists payments (
@@ -1241,6 +2277,117 @@ class PostgresStore {
         updated_at text not null
       )
     `);
+    await this.database.query(`
+      create table if not exists grant_reports (
+        id text primary key,
+        request_id text not null unique references research_requests (id) on delete cascade,
+        requester_id text not null references users (id) on delete cascade,
+        business_case_id text not null,
+        executive_summary text not null,
+        search_summary text not null,
+        opportunities_json text not null default '[]',
+        rejected_leads_json text not null default '[]',
+        next_actions_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists grant_catalog_entries (
+        id text primary key,
+        created_by_user_id text not null references users (id) on delete cascade,
+        source_type text not null check (source_type in ('promoted', 'curated')),
+        source_grant_id text unique,
+        source_report_id text,
+        title text not null,
+        sponsor text not null,
+        funding_type text not null,
+        fit_score integer not null,
+        why_fit text not null,
+        eligibility_notes_json text not null default '[]',
+        amount_summary text not null,
+        deadline_summary text not null,
+        geography text not null,
+        status text not null,
+        citations_json text not null default '[]',
+        next_actions_json text not null default '[]',
+        tags_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists grant_bookmarks (
+        id text primary key,
+        user_id text not null references users (id) on delete cascade,
+        grant_catalog_entry_id text not null references grant_catalog_entries (id) on delete cascade,
+        created_at text not null,
+        unique (user_id, grant_catalog_entry_id)
+      )
+    `);
+    await this.database.query(`
+      create table if not exists grant_application_schemas (
+        id text primary key,
+        catalog_grant_id text not null unique references grant_catalog_entries (id) on delete cascade,
+        name text not null,
+        document_type text not null,
+        sections_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists application_templates (
+        id text primary key,
+        owner_user_id text not null references users (id) on delete cascade,
+        name text not null,
+        document_type text not null,
+        sections_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists application_workspaces (
+        id text primary key,
+        requester_id text not null references users (id) on delete cascade,
+        catalog_grant_id text references grant_catalog_entries (id) on delete set null,
+        template_id text references application_templates (id) on delete set null,
+        document_type text not null,
+        title text not null,
+        state text not null check (state in ('draft', 'proposal')),
+        sections_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null,
+        finalized_at text
+      )
+    `);
+    await this.database.query(`
+      create table if not exists agent_provider_connections (
+        id text primary key,
+        scope text not null check (scope in ('user', 'organization')),
+        owner_user_id text references users (id) on delete cascade,
+        organization_id text references organizations (id) on delete cascade,
+        provider text not null,
+        label text not null,
+        auth_type text not null check (auth_type in ('byok', 'oauth')),
+        allowed_artifact_types_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists agent_execution_records (
+        id text primary key,
+        actor_user_id text not null references users (id) on delete cascade,
+        provider_connection_id text not null references agent_provider_connections (id) on delete cascade,
+        target_type text not null,
+        target_id text not null,
+        action text not null,
+        output_text text not null,
+        created_at text not null
+      )
+    `);
   }
 
   private async loadEngagementFromClient(
@@ -1302,6 +2449,14 @@ export class ApplicationStore {
 
   async upsertUserProfile(input: UpsertUserProfileInput): Promise<PlatformUser> {
     return this.driver.upsertUserProfile(input);
+  }
+
+  async findOrganizationByOwnerUserId(ownerUserId: string): Promise<PlatformOrganization | null> {
+    return this.driver.findOrganizationByOwnerUserId(ownerUserId);
+  }
+
+  async upsertOrganization(input: UpsertOrganizationInput): Promise<PlatformOrganization> {
+    return this.driver.upsertOrganization(input);
   }
 
   async createAgentToken(userId: string, label: string): Promise<CreateAgentTokenResult> {
@@ -1384,6 +2539,78 @@ export class ApplicationStore {
 
   async saveTrackedGrant(grant: PlatformTrackedGrant): Promise<PlatformTrackedGrant> {
     return this.driver.saveTrackedGrant(grant);
+  }
+
+  async findGrantReportByRequestId(requestId: string): Promise<PlatformGrantReport | null> {
+    return this.driver.findGrantReportByRequestId(requestId);
+  }
+
+  async upsertGrantReport(report: PlatformGrantReport): Promise<PlatformGrantReport> {
+    return this.driver.upsertGrantReport(report);
+  }
+
+  async findGrantCatalogEntryById(grantId: string): Promise<PlatformGrantCatalogEntry | null> {
+    return this.driver.findGrantCatalogEntryById(grantId);
+  }
+
+  async findGrantCatalogEntryBySourceGrantId(
+    sourceGrantId: string,
+  ): Promise<PlatformGrantCatalogEntry | null> {
+    return this.driver.findGrantCatalogEntryBySourceGrantId(sourceGrantId);
+  }
+
+  async saveGrantCatalogEntry(grant: PlatformGrantCatalogEntry): Promise<PlatformGrantCatalogEntry> {
+    return this.driver.saveGrantCatalogEntry(grant);
+  }
+
+  async setGrantBookmark(userId: string, grantId: string, bookmarked: boolean): Promise<boolean> {
+    return this.driver.setGrantBookmark(userId, grantId, bookmarked);
+  }
+
+  async findGrantApplicationSchemaByCatalogGrantId(
+    catalogGrantId: string,
+  ): Promise<PlatformGrantApplicationSchema | null> {
+    return this.driver.findGrantApplicationSchemaByCatalogGrantId(catalogGrantId);
+  }
+
+  async upsertGrantApplicationSchema(
+    schema: PlatformGrantApplicationSchema,
+  ): Promise<PlatformGrantApplicationSchema> {
+    return this.driver.upsertGrantApplicationSchema(schema);
+  }
+
+  async createApplicationTemplate(template: PlatformApplicationTemplate): Promise<PlatformApplicationTemplate> {
+    return this.driver.createApplicationTemplate(template);
+  }
+
+  async findApplicationTemplateById(templateId: string): Promise<PlatformApplicationTemplate | null> {
+    return this.driver.findApplicationTemplateById(templateId);
+  }
+
+  async createApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    return this.driver.createApplicationWorkspace(workspace);
+  }
+
+  async findApplicationWorkspaceById(workspaceId: string): Promise<PlatformApplicationWorkspace | null> {
+    return this.driver.findApplicationWorkspaceById(workspaceId);
+  }
+
+  async saveApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+    return this.driver.saveApplicationWorkspace(workspace);
+  }
+
+  async createAgentProviderConnection(
+    connection: PlatformAgentProviderConnection,
+  ): Promise<PlatformAgentProviderConnection> {
+    return this.driver.createAgentProviderConnection(connection);
+  }
+
+  async findAgentProviderConnectionById(connectionId: string): Promise<PlatformAgentProviderConnection | null> {
+    return this.driver.findAgentProviderConnectionById(connectionId);
+  }
+
+  async createAgentExecutionRecord(record: PlatformAgentExecutionRecord): Promise<PlatformAgentExecutionRecord> {
+    return this.driver.createAgentExecutionRecord(record);
   }
 
   async close(): Promise<void> {

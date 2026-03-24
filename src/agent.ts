@@ -1,13 +1,13 @@
-// ABOUTME: Assembles the PI funding research agent and runs end-to-end research for a business case.
-// ABOUTME: The app path uses a bounded search-and-summarize workflow while the interactive agent remains available.
+// ABOUTME: Assembles the PI funding research agent and runs end-to-end grant research for a business case.
+// ABOUTME: It supports iterative source fan-out, evidence review, and staged report synthesis for app and CLI flows.
 
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, getModel } from "@mariozechner/pi-ai";
-import type { Static } from "@mariozechner/pi-ai";
+import type { ImageContent, Static } from "@mariozechner/pi-ai";
 import OpenAI from "openai";
 
 import { buildResearchBrief } from "./brief.js";
-import { createReportCollector, type FundingReport } from "./report.js";
+import { createReportCollector, type FundingOpportunity, type FundingReport } from "./report.js";
 import type { BusinessScenario, ResearchBrief, SearchResult, SourcePage } from "./types.js";
 import { readWebPage, searchWeb } from "./web.js";
 
@@ -122,6 +122,14 @@ export interface FundingResearchRunOptions {
   provider?: string;
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  topN?: number;
+  minResearchRounds?: number;
+  maxResearchRounds?: number;
+  sourceDeltaThreshold?: number;
+  opportunityDeltaThreshold?: number;
+  minHighQualitySources?: number;
+  highQualitySourceScore?: number;
+  highConfidenceOpportunityScore?: number;
 }
 
 export interface FundingResearchResult {
@@ -190,9 +198,9 @@ interface EvaluatedSource {
   reason: string;
 }
 
-interface EvaluatedOpportunity extends FundingReport["opportunities"][number] {
+type EvaluatedOpportunity = FundingOpportunity & {
   evidenceScore: number;
-}
+};
 
 interface RoundEvaluation {
   summary: string;
@@ -587,6 +595,37 @@ function normalizeOpportunityKey(title: string, sponsor: string): string {
     .trim();
 }
 
+function getHighQualitySourceScore(options: FundingResearchRunOptions): number {
+  return Math.max(0, Math.min(100, options.highQualitySourceScore ?? HIGH_QUALITY_SOURCE_SCORE));
+}
+
+function getHighConfidenceOpportunityScore(options: FundingResearchRunOptions): number {
+  return Math.max(
+    0,
+    Math.min(100, options.highConfidenceOpportunityScore ?? HIGH_CONFIDENCE_OPPORTUNITY_SCORE),
+  );
+}
+
+function getMinHighQualitySources(options: FundingResearchRunOptions): number {
+  return Math.max(1, options.minHighQualitySources ?? MIN_HIGH_QUALITY_SOURCES);
+}
+
+function getMinResearchRounds(options: FundingResearchRunOptions): number {
+  return Math.max(1, options.minResearchRounds ?? MIN_RESEARCH_ROUNDS);
+}
+
+function getMaxResearchRounds(options: FundingResearchRunOptions): number {
+  return Math.max(getMinResearchRounds(options), options.maxResearchRounds ?? MAX_RESEARCH_ROUNDS);
+}
+
+function getSourceDeltaThreshold(options: FundingResearchRunOptions): number {
+  return Math.max(1, options.sourceDeltaThreshold ?? SOURCE_DELTA_THRESHOLD);
+}
+
+function getOpportunityDeltaThreshold(options: FundingResearchRunOptions): number {
+  return Math.max(1, options.opportunityDeltaThreshold ?? OPPORTUNITY_DELTA_THRESHOLD);
+}
+
 function isPreferredHost(url: string, preferredHosts: string[]): boolean {
   const host = normalizeUrlHost(url);
   return preferredHosts.some((preferredHost) => host === preferredHost || host.endsWith(`.${preferredHost}`));
@@ -811,7 +850,7 @@ async function reviewResearchRound(
       roundSearches: outcomes,
       roundSources,
       priorAcceptedSources: state.evaluatedSources
-        .filter((source) => source.keep && source.totalScore >= HIGH_QUALITY_SOURCE_SCORE)
+        .filter((source) => source.keep && source.totalScore >= getHighQualitySourceScore(options))
         .map((source) => ({
           url: source.url,
           title: source.title,
@@ -854,7 +893,7 @@ async function planFundingReport(
       brief,
       steeringNotes,
       highQualitySources: state.evaluatedSources.filter(
-        (source) => source.keep && source.totalScore >= HIGH_QUALITY_SOURCE_SCORE,
+        (source) => source.keep && source.totalScore >= getHighQualitySourceScore(options),
       ),
       opportunities: state.evaluatedOpportunities.map((opportunity) => ({
         title: opportunity.title,
@@ -931,7 +970,7 @@ async function reviewFundingReport(
       brief,
       draft,
       highQualitySources: state.evaluatedSources.filter(
-        (source) => source.keep && source.totalScore >= HIGH_QUALITY_SOURCE_SCORE,
+        (source) => source.keep && source.totalScore >= getHighQualitySourceScore(options),
       ),
       opportunities: state.evaluatedOpportunities.map((opportunity) => ({
         title: opportunity.title,
@@ -979,9 +1018,11 @@ async function finalizeFundingReport(
 }
 
 function mergeEvaluatedSources(
+  options: FundingResearchRunOptions,
   existing: EvaluatedSource[],
   incoming: EvaluatedSource[],
 ): { merged: EvaluatedSource[]; addedHighQuality: number } {
+  const highQualitySourceScore = getHighQualitySourceScore(options);
   const byUrl = new Map(existing.map((source) => [source.url, source]));
   let addedHighQuality = 0;
 
@@ -993,8 +1034,8 @@ function mergeEvaluatedSources(
 
     if (
       source.keep &&
-      source.totalScore >= HIGH_QUALITY_SOURCE_SCORE &&
-      (!previous || previous.totalScore < HIGH_QUALITY_SOURCE_SCORE || !previous.keep)
+      source.totalScore >= highQualitySourceScore &&
+      (!previous || previous.totalScore < highQualitySourceScore || !previous.keep)
     ) {
       addedHighQuality += 1;
     }
@@ -1007,9 +1048,11 @@ function mergeEvaluatedSources(
 }
 
 function mergeEvaluatedOpportunities(
+  options: FundingResearchRunOptions,
   existing: EvaluatedOpportunity[],
   incoming: EvaluatedOpportunity[],
 ): { merged: EvaluatedOpportunity[]; addedHighConfidence: number } {
+  const highConfidenceOpportunityScore = getHighConfidenceOpportunityScore(options);
   const byKey = new Map(existing.map((opportunity) => [normalizeOpportunityKey(opportunity.title, opportunity.sponsor), opportunity]));
   let addedHighConfidence = 0;
 
@@ -1021,8 +1064,8 @@ function mergeEvaluatedOpportunities(
     }
 
     if (
-      opportunity.evidenceScore >= HIGH_CONFIDENCE_OPPORTUNITY_SCORE &&
-      (!previous || previous.evidenceScore < HIGH_CONFIDENCE_OPPORTUNITY_SCORE)
+      opportunity.evidenceScore >= highConfidenceOpportunityScore &&
+      (!previous || previous.evidenceScore < highConfidenceOpportunityScore)
     ) {
       addedHighConfidence += 1;
     }
@@ -1048,9 +1091,12 @@ function mergeRejectedLeads(
 }
 
 function extractSteeringText(message: AgentMessage): string {
+  if (typeof message.content === "string") {
+    return message.content.trim();
+  }
+
   return message.content
-    .filter((entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string")
-    .map((entry) => entry.text.trim())
+    .flatMap((entry) => (entry.type === "text" && typeof entry.text === "string" ? [entry.text.trim()] : []))
     .filter(Boolean)
     .join("\n\n");
 }
@@ -1170,8 +1216,12 @@ async function collectResearchRound(
     (result) => `Reviewed ${result.sources.length} sources and ${result.opportunities.length} opportunities.`,
   );
 
-  const mergedSources = mergeEvaluatedSources(state.evaluatedSources, evaluation.sources);
-  const mergedOpportunities = mergeEvaluatedOpportunities(state.evaluatedOpportunities, evaluation.opportunities);
+  const mergedSources = mergeEvaluatedSources(options, state.evaluatedSources, evaluation.sources);
+  const mergedOpportunities = mergeEvaluatedOpportunities(
+    options,
+    state.evaluatedOpportunities,
+    evaluation.opportunities,
+  );
 
   return {
     nextState: {
@@ -1193,6 +1243,12 @@ async function collectIterativeResearch(
   observer: ResearchProgressObserver | undefined,
   steeringSource: ResearchSteeringSource | undefined,
 ): Promise<ResearchCollectionState> {
+  const maxResearchRounds = getMaxResearchRounds(options);
+  const minResearchRounds = getMinResearchRounds(options);
+  const minHighQualitySources = getMinHighQualitySources(options);
+  const highQualitySourceScore = getHighQualitySourceScore(options);
+  const sourceDeltaThreshold = getSourceDeltaThreshold(options);
+  const opportunityDeltaThreshold = getOpportunityDeltaThreshold(options);
   let state: ResearchCollectionState = {
     searches: [],
     sources: [],
@@ -1203,7 +1259,7 @@ async function collectIterativeResearch(
   };
   let forcedTopics: string[] = [];
 
-  for (let round = 1; round <= MAX_RESEARCH_ROUNDS; round += 1) {
+  for (let round = 1; round <= maxResearchRounds; round += 1) {
     observer?.onTurnStart?.();
     const steeringNotes = steeringSource?.consume() ?? [];
     const roundResult = await collectResearchRound(options, brief, state, round, steeringNotes, observer, forcedTopics);
@@ -1211,13 +1267,13 @@ async function collectIterativeResearch(
     forcedTopics = state.informationGaps.slice(0, 4);
 
     const highQualitySourceCount = state.evaluatedSources.filter(
-      (source) => source.keep && source.totalScore >= HIGH_QUALITY_SOURCE_SCORE,
+      (source) => source.keep && source.totalScore >= highQualitySourceScore,
     ).length;
     const shouldContinue =
-      round < MIN_RESEARCH_ROUNDS ||
-      highQualitySourceCount < MIN_HIGH_QUALITY_SOURCES ||
-      roundResult.addedHighQualitySources >= SOURCE_DELTA_THRESHOLD ||
-      roundResult.addedHighConfidenceOpportunities >= OPPORTUNITY_DELTA_THRESHOLD;
+      round < minResearchRounds ||
+      highQualitySourceCount < minHighQualitySources ||
+      roundResult.addedHighQualitySources >= sourceDeltaThreshold ||
+      roundResult.addedHighConfidenceOpportunities >= opportunityDeltaThreshold;
 
     if (!shouldContinue) {
       break;
@@ -1253,7 +1309,7 @@ async function buildFundingReportFromState(
         options,
         brief,
         workingState,
-        MAX_RESEARCH_ROUNDS + attempt + 1,
+        getMaxResearchRounds(options) + attempt + 1,
         steeringNotes,
         observer,
         plan.missingEvidenceTopics.slice(0, 4),
@@ -1282,7 +1338,7 @@ async function buildFundingReportFromState(
         options,
         brief,
         workingState,
-        MAX_RESEARCH_ROUNDS + attempt + 2,
+        getMaxResearchRounds(options) + attempt + 2,
         steeringNotes,
         observer,
         review.missingEvidenceTopics.slice(0, 4),
@@ -1390,10 +1446,12 @@ function createDeterministicFundingResearchSession(options: FundingResearchRunOp
     }
   };
 
-  const prompt: Agent["prompt"] = async () => {
+  const prompt: Agent["prompt"] = async (
+    _messageOrInput: AgentMessage | AgentMessage[] | string,
+    _images?: ImageContent[],
+  ) => {
     const result = await runDeepFundingResearch(options, observer, steeringSource);
     report = result.report;
-    return [];
   };
 
   return {

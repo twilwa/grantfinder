@@ -1,13 +1,29 @@
 // ABOUTME: Defines the persistent marketplace, auth, and payment types for the web application shell.
 // ABOUTME: These types keep the HTTP surfaces, browser UI, and service layer aligned around one data model.
 
-import type { FundingReport } from "./report.js";
+import type { FundingOpportunity, FundingReport, RejectedLead } from "./report.js";
 import type { BusinessScenario, ResearchBrief } from "./types.js";
 
 export type UserRole = "requester" | "specialist";
 export type JobType = "general" | "grant_proposal";
+export type ApplicationDocumentType = "grant_proposal" | "loi" | "budget_narrative" | "other";
+export type OrganizationType =
+  | "nonprofit"
+  | "fiscal_sponsor"
+  | "school"
+  | "government"
+  | "tribal_entity"
+  | "for_profit"
+  | "other";
+export type OrganizationOperatingScope = "local" | "regional" | "national" | "international";
 export type ResearchRequestStatus = "draft" | "running" | "completed" | "failed";
 export type GrantQueueState = "active" | "inactive";
+export type GrantCatalogSourceType = "promoted" | "curated";
+export type ApplicationWorkspaceState = "draft" | "proposal";
+export type ServiceTargetType = "grant_catalog_entry" | "application_workspace" | "workspace_section";
+export type SpecialistServiceRole = "researcher" | "writer" | "reviewer" | "submission_specialist";
+export type AgentProviderConnectionScope = "user" | "organization";
+export type AgentProviderAuthType = "byok" | "oauth";
 export type ResearchRunPhase =
   | "idle"
   | "briefing"
@@ -49,6 +65,36 @@ export interface PlatformUser {
   updatedAt: string;
 }
 
+export interface PlatformOrganizationPersonnel {
+  id: string;
+  fullName: string;
+  roleTitle: string;
+  yearsExperience: number | null;
+  email: string | null;
+}
+
+export interface PlatformOrganization {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  website: string | null;
+  registrationCountry: string;
+  registrationRegion: string | null;
+  organizationType: OrganizationType;
+  operatingScope: OrganizationOperatingScope;
+  localOperatingAreas: string[];
+  missionStatement: string;
+  programs: string[];
+  targetDemographics: string[];
+  thematicAreas: string[];
+  annualOperatingBudget: string;
+  strategicPriorities: string[];
+  emailUpdatesEnabled: boolean;
+  personnel: PlatformOrganizationPersonnel[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PlatformAgentToken {
   id: string;
   userId: string;
@@ -63,6 +109,9 @@ export interface PlatformJob {
   requesterId: string;
   type: JobType;
   grantId: string | null;
+  targetType: ServiceTargetType | null;
+  targetId: string | null;
+  specialistRole: SpecialistServiceRole | null;
   title: string;
   description: string;
   fundingNeed: string;
@@ -74,6 +123,7 @@ export interface PlatformOffer {
   id: string;
   jobId: string;
   specialistId: string;
+  specialistRole: SpecialistServiceRole | null;
   message: string;
   amountUsd: string;
   payoutAddress: string;
@@ -98,6 +148,9 @@ export interface PlatformEngagement {
   offerId: string;
   requesterId: string;
   specialistId: string;
+  targetType: ServiceTargetType | null;
+  targetId: string | null;
+  specialistRole: SpecialistServiceRole | null;
   amountUsd: string;
   payoutAddress: string;
   status: "pending_funding" | "funded";
@@ -153,8 +206,133 @@ export interface PlatformTrackedGrant {
   updatedAt: string;
 }
 
+export interface PlatformGrantReport {
+  id: string;
+  requestId: string;
+  requesterId: string;
+  businessCaseId: string;
+  executiveSummary: string;
+  searchSummary: string;
+  opportunities: FundingOpportunity[];
+  rejectedLeads: RejectedLead[];
+  nextActions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformGrantCatalogEntry {
+  id: string;
+  createdByUserId: string;
+  sourceType: GrantCatalogSourceType;
+  sourceGrantId: string | null;
+  sourceReportId: string | null;
+  title: string;
+  sponsor: string;
+  fundingType: string;
+  fitScore: number;
+  whyFit: string;
+  eligibilityNotes: string[];
+  amountSummary: string;
+  deadlineSummary: string;
+  geography: string;
+  status: string;
+  citations: string[];
+  nextActions: string[];
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformGrantBookmark {
+  id: string;
+  userId: string;
+  grantId: string;
+  createdAt: string;
+}
+
+export interface PlatformApplicationSectionValidation {
+  minWords: number | null;
+  maxWords: number | null;
+}
+
+export interface PlatformApplicationSectionDefinition {
+  id: string;
+  key: string;
+  title: string;
+  stepName: string | null;
+  prompt: string | null;
+  examples: string[];
+  validation: PlatformApplicationSectionValidation;
+}
+
+export interface PlatformApplicationWorkspaceSection extends PlatformApplicationSectionDefinition {
+  orderIndex: number;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformGrantApplicationSchema {
+  id: string;
+  catalogGrantId: string;
+  name: string;
+  documentType: ApplicationDocumentType;
+  sections: PlatformApplicationSectionDefinition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformApplicationTemplate {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  documentType: ApplicationDocumentType;
+  sections: PlatformApplicationSectionDefinition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformApplicationWorkspace {
+  id: string;
+  requesterId: string;
+  catalogGrantId: string | null;
+  templateId: string | null;
+  documentType: ApplicationDocumentType;
+  title: string;
+  state: ApplicationWorkspaceState;
+  sections: PlatformApplicationWorkspaceSection[];
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt: string | null;
+}
+
+export interface PlatformAgentProviderConnection {
+  id: string;
+  scope: AgentProviderConnectionScope;
+  ownerUserId: string | null;
+  organizationId: string | null;
+  provider: string;
+  label: string;
+  authType: AgentProviderAuthType;
+  allowedArtifactTypes: ServiceTargetType[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformAgentExecutionRecord {
+  id: string;
+  actorUserId: string;
+  providerConnectionId: string;
+  targetType: ServiceTargetType;
+  targetId: string;
+  action: string;
+  outputText: string;
+  createdAt: string;
+}
+
 export interface PlatformState {
   users: PlatformUser[];
+  organizations: PlatformOrganization[];
   agentTokens: PlatformAgentToken[];
   jobs: PlatformJob[];
   offers: PlatformOffer[];
@@ -162,6 +340,14 @@ export interface PlatformState {
   researchScenarios: PlatformResearchScenario[];
   researchRequests: PlatformResearchRequest[];
   trackedGrants: PlatformTrackedGrant[];
+  grantReports: PlatformGrantReport[];
+  grantCatalogEntries: PlatformGrantCatalogEntry[];
+  grantBookmarks: PlatformGrantBookmark[];
+  grantApplicationSchemas: PlatformGrantApplicationSchema[];
+  applicationTemplates: PlatformApplicationTemplate[];
+  applicationWorkspaces: PlatformApplicationWorkspace[];
+  agentProviderConnections: PlatformAgentProviderConnection[];
+  agentExecutionRecords: PlatformAgentExecutionRecord[];
 }
 
 export interface PlatformSessionIdentity {
@@ -194,6 +380,7 @@ export interface FundingChallenge {
 export function createEmptyPlatformState(): PlatformState {
   return {
     users: [],
+    organizations: [],
     agentTokens: [],
     jobs: [],
     offers: [],
@@ -201,5 +388,13 @@ export function createEmptyPlatformState(): PlatformState {
     researchScenarios: [],
     researchRequests: [],
     trackedGrants: [],
+    grantReports: [],
+    grantCatalogEntries: [],
+    grantBookmarks: [],
+    grantApplicationSchemas: [],
+    applicationTemplates: [],
+    applicationWorkspaces: [],
+    agentProviderConnections: [],
+    agentExecutionRecords: [],
   };
 }

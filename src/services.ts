@@ -12,10 +12,24 @@ import {
 } from "./agent.js";
 import { InvalidAccessTokenError, type BrowserAuthProvider } from "./auth.js";
 import type {
+  AgentProviderAuthType,
+  AgentProviderConnectionScope,
+  ApplicationDocumentType,
+  ApplicationWorkspaceState,
   PlatformAgentToken,
+  PlatformAgentExecutionRecord,
+  PlatformAgentProviderConnection,
+  PlatformApplicationTemplate,
+  PlatformApplicationWorkspace,
+  PlatformApplicationWorkspaceSection,
   PlatformEngagement,
+  PlatformGrantApplicationSchema,
+  PlatformGrantCatalogEntry,
+  PlatformGrantReport,
   PlatformJob,
   PlatformOffer,
+  PlatformOrganization,
+  PlatformOrganizationPersonnel,
   PlatformResearchActivity,
   PlatformResearchRequest,
   PlatformResearchScenario,
@@ -25,6 +39,8 @@ import type {
   PlatformTrackedGrant,
   PlatformUser,
   ResearchRunPhase,
+  ServiceTargetType,
+  SpecialistServiceRole,
   UserRole,
   X402Settings,
   FundingChallenge,
@@ -46,10 +62,36 @@ interface CreateAgentTokenInput {
   label?: string;
 }
 
+interface UpsertOrganizationInput {
+  name: string;
+  website?: string | null;
+  registrationCountry: string;
+  registrationRegion?: string | null;
+  organizationType: PlatformOrganization["organizationType"];
+  operatingScope: PlatformOrganization["operatingScope"];
+  localOperatingAreas: string[];
+  missionStatement: string;
+  programs: string[];
+  targetDemographics: string[];
+  thematicAreas: string[];
+  annualOperatingBudget: string;
+  strategicPriorities: string[];
+  emailUpdatesEnabled: boolean;
+  personnel: Array<{
+    fullName: string;
+    roleTitle: string;
+    yearsExperience?: number | null;
+    email?: string | null;
+  }>;
+}
+
 interface CreateJobInput {
   title: string;
   description: string;
   fundingNeed: string;
+  targetType?: ServiceTargetType | null;
+  targetId?: string | null;
+  specialistRole?: SpecialistServiceRole | null;
 }
 
 interface CreateResearchScenarioInput {
@@ -78,6 +120,43 @@ interface CreateOfferInput {
   message: string;
   amountUsd: string;
   payoutAddress: string;
+  specialistRole?: SpecialistServiceRole | null;
+}
+
+interface UpsertGrantApplicationSchemaInput {
+  name: string;
+  documentType: ApplicationDocumentType;
+  sections: Array<{
+    key: string;
+    title: string;
+    stepName?: string | null;
+    prompt?: string | null;
+    examples?: string[];
+    validation?: {
+      minWords?: number | null;
+      maxWords?: number | null;
+    };
+  }>;
+}
+
+interface CreateApplicationTemplateInput extends UpsertGrantApplicationSchemaInput {}
+
+interface CreateApplicationWorkspaceInput {
+  catalogGrantId?: string | null;
+  templateId?: string | null;
+  documentType: ApplicationDocumentType;
+}
+
+interface GenerateWorkspaceSectionInput {
+  providerConnectionId?: string | null;
+}
+
+interface CreateProviderConnectionInput {
+  scope: AgentProviderConnectionScope;
+  provider: string;
+  label: string;
+  authType: AgentProviderAuthType;
+  allowedArtifactTypes: ServiceTargetType[];
 }
 
 interface DashboardJob extends PlatformJob {
@@ -123,10 +202,13 @@ interface WorkspaceGrant extends PlatformTrackedGrant {
 
 export interface WorkspaceData {
   user: ReturnType<ApplicationServices["toPublicUser"]>;
+  organization: ReturnType<ApplicationServices["toPublicOrganization"]> | null;
   marketplace: DashboardData;
   scenarios: ResearchScenarioSummary[];
   requests: WorkspaceRequest[];
   grants: WorkspaceGrant[];
+  reports: Array<ReturnType<ApplicationServices["toPublicGrantReport"]>>;
+  catalog: Array<ReturnType<ApplicationServices["toPublicGrantCatalogEntry"]>>;
 }
 
 export type FundingResearchRunner = (
@@ -225,6 +307,185 @@ export class ApplicationServices {
     };
   }
 
+  toPublicOrganization(organization: PlatformOrganization) {
+    return {
+      id: organization.id,
+      ownerUserId: organization.ownerUserId,
+      name: organization.name,
+      website: organization.website,
+      registrationCountry: organization.registrationCountry,
+      registrationRegion: organization.registrationRegion,
+      organizationType: organization.organizationType,
+      operatingScope: organization.operatingScope,
+      localOperatingAreas: [...organization.localOperatingAreas],
+      missionStatement: organization.missionStatement,
+      programs: [...organization.programs],
+      targetDemographics: [...organization.targetDemographics],
+      thematicAreas: [...organization.thematicAreas],
+      annualOperatingBudget: organization.annualOperatingBudget,
+      strategicPriorities: [...organization.strategicPriorities],
+      emailUpdatesEnabled: organization.emailUpdatesEnabled,
+      personnel: organization.personnel.map((person) => ({
+        id: person.id,
+        fullName: person.fullName,
+        roleTitle: person.roleTitle,
+        yearsExperience: person.yearsExperience,
+        email: person.email,
+      })),
+      createdAt: organization.createdAt,
+      updatedAt: organization.updatedAt,
+    };
+  }
+
+  toPublicGrantReport(report: PlatformGrantReport) {
+    return {
+      id: report.id,
+      requestId: report.requestId,
+      requesterId: report.requesterId,
+      businessCaseId: report.businessCaseId,
+      executiveSummary: report.executiveSummary,
+      searchSummary: report.searchSummary,
+      opportunityCount: report.opportunities.length,
+      opportunities: report.opportunities.map((opportunity) => ({
+        ...opportunity,
+        eligibilityNotes: [...opportunity.eligibilityNotes],
+        citations: [...opportunity.citations],
+        nextActions: [...opportunity.nextActions],
+      })),
+      rejectedLeads: report.rejectedLeads.map((lead) => ({
+        ...lead,
+        citations: [...lead.citations],
+      })),
+      nextActions: [...report.nextActions],
+      createdAt: report.createdAt,
+      updatedAt: report.updatedAt,
+    };
+  }
+
+  toPublicGrantCatalogEntry(grant: PlatformGrantCatalogEntry, isBookmarked: boolean) {
+    return {
+      id: grant.id,
+      createdByUserId: grant.createdByUserId,
+      sourceType: grant.sourceType,
+      sourceGrantId: grant.sourceGrantId,
+      sourceReportId: grant.sourceReportId,
+      title: grant.title,
+      sponsor: grant.sponsor,
+      fundingType: grant.fundingType,
+      fitScore: grant.fitScore,
+      whyFit: grant.whyFit,
+      eligibilityNotes: [...grant.eligibilityNotes],
+      amountSummary: grant.amountSummary,
+      deadlineSummary: grant.deadlineSummary,
+      geography: grant.geography,
+      status: grant.status,
+      citations: [...grant.citations],
+      nextActions: [...grant.nextActions],
+      tags: [...grant.tags],
+      isBookmarked,
+      createdAt: grant.createdAt,
+      updatedAt: grant.updatedAt,
+    };
+  }
+
+  toPublicGrantApplicationSchema(schema: PlatformGrantApplicationSchema) {
+    return {
+      id: schema.id,
+      catalogGrantId: schema.catalogGrantId,
+      name: schema.name,
+      documentType: schema.documentType,
+      sections: schema.sections.map((section) => ({
+        id: section.id,
+        key: section.key,
+        title: section.title,
+        stepName: section.stepName,
+        prompt: section.prompt,
+        examples: [...section.examples],
+        validation: { ...section.validation },
+      })),
+      createdAt: schema.createdAt,
+      updatedAt: schema.updatedAt,
+    };
+  }
+
+  toPublicApplicationTemplate(template: PlatformApplicationTemplate) {
+    return {
+      id: template.id,
+      ownerUserId: template.ownerUserId,
+      name: template.name,
+      documentType: template.documentType,
+      sections: template.sections.map((section) => ({
+        id: section.id,
+        key: section.key,
+        title: section.title,
+        stepName: section.stepName,
+        prompt: section.prompt,
+        examples: [...section.examples],
+        validation: { ...section.validation },
+      })),
+      createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
+    };
+  }
+
+  toPublicApplicationWorkspace(workspace: PlatformApplicationWorkspace) {
+    return {
+      id: workspace.id,
+      requesterId: workspace.requesterId,
+      catalogGrantId: workspace.catalogGrantId,
+      templateId: workspace.templateId,
+      documentType: workspace.documentType,
+      title: workspace.title,
+      state: workspace.state,
+      sections: workspace.sections
+        .map((section) => ({
+          id: section.id,
+          key: section.key,
+          title: section.title,
+          stepName: section.stepName,
+          prompt: section.prompt,
+          examples: [...section.examples],
+          validation: { ...section.validation },
+          orderIndex: section.orderIndex,
+          content: section.content,
+          createdAt: section.createdAt,
+          updatedAt: section.updatedAt,
+        }))
+        .sort((left, right) => left.orderIndex - right.orderIndex),
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
+      finalizedAt: workspace.finalizedAt,
+    };
+  }
+
+  toPublicProviderConnection(connection: PlatformAgentProviderConnection) {
+    return {
+      id: connection.id,
+      scope: connection.scope,
+      ownerUserId: connection.ownerUserId,
+      organizationId: connection.organizationId,
+      provider: connection.provider,
+      label: connection.label,
+      authType: connection.authType,
+      allowedArtifactTypes: [...connection.allowedArtifactTypes],
+      createdAt: connection.createdAt,
+      updatedAt: connection.updatedAt,
+    };
+  }
+
+  toPublicAgentExecutionRecord(record: PlatformAgentExecutionRecord) {
+    return {
+      id: record.id,
+      actorUserId: record.actorUserId,
+      providerConnectionId: record.providerConnectionId,
+      targetType: record.targetType,
+      targetId: record.targetId,
+      action: record.action,
+      outputText: record.outputText,
+      createdAt: record.createdAt,
+    };
+  }
+
   toPublicAgentToken(token: PlatformAgentToken) {
     return {
       id: token.id,
@@ -303,6 +564,45 @@ export class ApplicationServices {
   async revokeAgentToken(user: PlatformUser, tokenId: string) {
     await this.store.revokeAgentToken(user.id, requireText(tokenId, "tokenId"));
     return { ok: true };
+  }
+
+  async getOrganization(user: PlatformUser) {
+    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    return {
+      organization: organization ? this.toPublicOrganization(organization) : null,
+    };
+  }
+
+  async upsertOrganization(user: PlatformUser, input: UpsertOrganizationInput) {
+    this.requireRole(user, "requester");
+
+    const thematicAreas = normalizeTextList(input.thematicAreas, "thematicAreas");
+    if (thematicAreas.length > 3) {
+      throw new AppError(400, "invalid_input", "thematicAreas can contain at most 3 values.");
+    }
+
+    const organization = await this.store.upsertOrganization({
+      ownerUserId: user.id,
+      name: requireText(input.name, "name"),
+      website: this.normalizeOptionalText(input.website),
+      registrationCountry: requireText(input.registrationCountry, "registrationCountry"),
+      registrationRegion: this.normalizeOptionalText(input.registrationRegion),
+      organizationType: this.requireOrganizationTypeValue(input.organizationType),
+      operatingScope: this.requireOrganizationOperatingScopeValue(input.operatingScope),
+      localOperatingAreas: normalizeTextList(input.localOperatingAreas, "localOperatingAreas"),
+      missionStatement: requireText(input.missionStatement, "missionStatement"),
+      programs: normalizeTextList(input.programs, "programs"),
+      targetDemographics: normalizeTextList(input.targetDemographics, "targetDemographics"),
+      thematicAreas,
+      annualOperatingBudget: requireText(input.annualOperatingBudget, "annualOperatingBudget"),
+      strategicPriorities: normalizeTextList(input.strategicPriorities, "strategicPriorities"),
+      emailUpdatesEnabled: Boolean(input.emailUpdatesEnabled),
+      personnel: this.normalizeOrganizationPersonnel(input.personnel),
+    });
+
+    return {
+      organization: this.toPublicOrganization(organization),
+    };
   }
 
   async listScenarioIds(): Promise<string[]> {
@@ -525,6 +825,13 @@ export class ApplicationServices {
   async getWorkspace(user: PlatformUser): Promise<WorkspaceData> {
     const state = await this.store.readState();
     const scenarioNames = await this.getScenarioNameMap(user, state);
+    const bookmarkIds = new Set(
+      state.grantBookmarks
+        .filter((bookmark) => bookmark.userId === user.id)
+        .map((bookmark) => bookmark.grantId),
+    );
+    const organization =
+      state.organizations.find((candidate) => candidate.ownerUserId === user.id) ?? null;
     const requests = state.researchRequests
       .filter((request) => request.requesterId === user.id)
       .map((request) => {
@@ -549,9 +856,17 @@ export class ApplicationServices {
         };
       })
       .sort(byCreatedAt);
+    const reports = state.grantReports
+      .filter((report) => report.requesterId === user.id)
+      .map((report) => this.toPublicGrantReport(report))
+      .sort(byCreatedAt);
+    const catalog = state.grantCatalogEntries
+      .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id)))
+      .sort(byCreatedAt);
 
     return {
       user: this.toPublicUser(user),
+      organization: organization ? this.toPublicOrganization(organization) : null,
       marketplace: {
         users: state.users.sort(byCreatedAt).map((candidate) => this.toPublicUser(candidate)),
         jobs: this.buildDashboardJobs(state),
@@ -561,6 +876,8 @@ export class ApplicationServices {
       scenarios: (await this.listResearchScenarios(user)).scenarios,
       requests,
       grants,
+      reports,
+      catalog,
     };
   }
 
@@ -585,6 +902,303 @@ export class ApplicationServices {
       grantCount: grants.length,
       activeGrantCount: grants.filter((grant) => grant.queueState === "active").length,
       grants,
+    };
+  }
+
+  async listGrantReports(user: PlatformUser) {
+    const state = await this.store.readState();
+    return {
+      reports: state.grantReports
+        .filter((report) => report.requesterId === user.id)
+        .map((report) => this.toPublicGrantReport(report))
+        .sort(byCreatedAt),
+    };
+  }
+
+  async promoteGrantToCatalogEntry(user: PlatformUser, grantId: string) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireGrantOwner(user, grantId);
+    const report = await this.store.findGrantReportByRequestId(grant.requestId);
+    if (!report) {
+      throw new AppError(
+        409,
+        "grant_report_missing",
+        "This tracked grant cannot be promoted until its research report is available.",
+      );
+    }
+
+    const existingEntry = await this.store.findGrantCatalogEntryBySourceGrantId(grant.id);
+    const catalogEntry: PlatformGrantCatalogEntry = {
+      id: existingEntry?.id ?? makeId("catalog"),
+      createdByUserId: existingEntry?.createdByUserId ?? user.id,
+      sourceType: "promoted",
+      sourceGrantId: grant.id,
+      sourceReportId: report.id,
+      title: grant.title,
+      sponsor: grant.sponsor,
+      fundingType: grant.fundingType,
+      fitScore: grant.fitScore,
+      whyFit: grant.whyFit,
+      eligibilityNotes: [...grant.eligibilityNotes],
+      amountSummary: grant.amountSummary,
+      deadlineSummary: grant.deadlineSummary,
+      geography: grant.geography,
+      status: grant.status,
+      citations: [...grant.citations],
+      nextActions: [...grant.nextActions],
+      tags: this.buildCatalogTags(grant),
+      createdAt: existingEntry?.createdAt ?? now(),
+      updatedAt: now(),
+    };
+
+    const savedEntry = await this.store.saveGrantCatalogEntry(catalogEntry);
+    const bookmarked = await this.isCatalogGrantBookmarked(user.id, savedEntry.id);
+    return {
+      grant: this.toPublicGrantCatalogEntry(savedEntry, bookmarked),
+    };
+  }
+
+  async listCatalogGrants(
+    user: PlatformUser,
+    filters: { bookmarked?: boolean } = {},
+  ) {
+    const state = await this.store.readState();
+    const bookmarkIds = new Set(
+      state.grantBookmarks
+        .filter((bookmark) => bookmark.userId === user.id)
+        .map((bookmark) => bookmark.grantId),
+    );
+    const bookmarkedOnly = filters.bookmarked ?? false;
+
+    return {
+      grants: state.grantCatalogEntries
+        .filter((grant) => !bookmarkedOnly || bookmarkIds.has(grant.id))
+        .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id)))
+        .sort(byCreatedAt),
+    };
+  }
+
+  async getCatalogGrant(user: PlatformUser, grantId: string) {
+    const grant = await this.requireCatalogGrant(grantId);
+    return {
+      grant: this.toPublicGrantCatalogEntry(
+        grant,
+        await this.isCatalogGrantBookmarked(user.id, grant.id),
+      ),
+    };
+  }
+
+  async setCatalogGrantBookmark(user: PlatformUser, grantId: string, bookmarked: boolean) {
+    await this.requireCatalogGrant(grantId);
+    const isBookmarked = await this.store.setGrantBookmark(user.id, grantId, bookmarked);
+    const grant = await this.requireCatalogGrant(grantId);
+    return {
+      grant: this.toPublicGrantCatalogEntry(grant, isBookmarked),
+    };
+  }
+
+  async upsertGrantApplicationSchema(
+    user: PlatformUser,
+    grantId: string,
+    input: UpsertGrantApplicationSchemaInput,
+  ) {
+    this.requireRole(user, "requester");
+    await this.requireCatalogGrant(grantId);
+
+    const existing = await this.store.findGrantApplicationSchemaByCatalogGrantId(grantId);
+    const timestamp = now();
+    const schema = await this.store.upsertGrantApplicationSchema({
+      id: existing?.id ?? makeId("schema"),
+      catalogGrantId: grantId,
+      name: requireText(input.name, "name"),
+      documentType: this.requireApplicationDocumentType(input.documentType),
+      sections: this.normalizeSectionDefinitions(input.sections),
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    });
+
+    return {
+      schema: this.toPublicGrantApplicationSchema(schema),
+    };
+  }
+
+  async createApplicationTemplate(user: PlatformUser, input: CreateApplicationTemplateInput) {
+    this.requireRole(user, "requester");
+
+    const timestamp = now();
+    const template = await this.store.createApplicationTemplate({
+      id: makeId("template"),
+      ownerUserId: user.id,
+      name: requireText(input.name, "name"),
+      documentType: this.requireApplicationDocumentType(input.documentType),
+      sections: this.normalizeSectionDefinitions(input.sections),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    return {
+      template: this.toPublicApplicationTemplate(template),
+    };
+  }
+
+  async createApplicationWorkspace(user: PlatformUser, input: CreateApplicationWorkspaceInput) {
+    this.requireRole(user, "requester");
+
+    const documentType = this.requireApplicationDocumentType(input.documentType);
+    const timestamp = now();
+    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    let catalogGrant: PlatformGrantCatalogEntry | null = null;
+    let template: PlatformApplicationTemplate | null = null;
+    let schema: PlatformGrantApplicationSchema | null = null;
+
+    if (input.catalogGrantId) {
+      catalogGrant = await this.requireCatalogGrant(input.catalogGrantId);
+      schema = await this.store.findGrantApplicationSchemaByCatalogGrantId(catalogGrant.id);
+    }
+
+    if (input.templateId) {
+      template = await this.requireApplicationTemplateOwner(user, input.templateId);
+    }
+
+    const sectionDefinitions =
+      schema?.sections ??
+      template?.sections ??
+      this.buildDefaultWorkspaceSections(documentType);
+    const workspace = await this.store.createApplicationWorkspace({
+      id: makeId("workspace"),
+      requesterId: user.id,
+      catalogGrantId: catalogGrant?.id ?? null,
+      templateId: template?.id ?? null,
+      documentType,
+      title:
+        catalogGrant?.title ??
+        template?.name ??
+        `${documentType.replaceAll("_", " ")} workspace`,
+      state: "draft",
+      sections: this.instantiateWorkspaceSections(sectionDefinitions, organization, catalogGrant, timestamp),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      finalizedAt: null,
+    });
+
+    return {
+      workspace: this.toPublicApplicationWorkspace(workspace),
+    };
+  }
+
+  async getApplicationWorkspace(user: PlatformUser, workspaceId: string) {
+    const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
+    return {
+      workspace: this.toPublicApplicationWorkspace(workspace),
+    };
+  }
+
+  async finalizeApplicationWorkspace(user: PlatformUser, workspaceId: string) {
+    const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
+    const finalizedAt = now();
+    const saved = await this.store.saveApplicationWorkspace({
+      ...workspace,
+      state: "proposal",
+      updatedAt: finalizedAt,
+      finalizedAt,
+    });
+
+    return {
+      workspace: this.toPublicApplicationWorkspace(saved),
+    };
+  }
+
+  async generateApplicationWorkspaceSection(
+    user: PlatformUser,
+    workspaceId: string,
+    sectionId: string,
+    input: GenerateWorkspaceSectionInput = {},
+  ) {
+    const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
+    const sectionIndex = workspace.sections.findIndex((section) => section.id === sectionId);
+    if (sectionIndex === -1) {
+      throw new AppError(404, "workspace_section_not_found", "The requested workspace section does not exist.");
+    }
+
+    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    const catalogGrant = workspace.catalogGrantId
+      ? await this.store.findGrantCatalogEntryById(workspace.catalogGrantId)
+      : null;
+    const generatedContent = this.composeWorkspaceSectionContent(
+      workspace.sections[sectionIndex],
+      organization,
+      catalogGrant,
+    );
+    const updatedAt = now();
+    const updatedSections = workspace.sections.map((section, index) =>
+      index === sectionIndex ? { ...section, content: generatedContent, updatedAt } : section,
+    );
+    const savedWorkspace = await this.store.saveApplicationWorkspace({
+      ...workspace,
+      sections: updatedSections,
+      updatedAt,
+    });
+    const savedSection = savedWorkspace.sections.find((section) => section.id === sectionId);
+    if (!savedSection) {
+      throw new AppError(500, "workspace_section_missing", "The saved workspace section could not be loaded.");
+    }
+
+    if (input.providerConnectionId) {
+      const providerConnection = await this.requireProviderConnectionForAction(
+        user,
+        input.providerConnectionId,
+        "workspace_section",
+      );
+      await this.store.createAgentExecutionRecord({
+        id: makeId("execution"),
+        actorUserId: user.id,
+        providerConnectionId: providerConnection.id,
+        targetType: "workspace_section",
+        targetId: sectionId,
+        action: "generate_section",
+        outputText: generatedContent,
+        createdAt: updatedAt,
+      });
+    }
+
+    return {
+      section: this.toPublicApplicationWorkspace(savedWorkspace).sections.find(
+        (section) => section.id === sectionId,
+      ),
+    };
+  }
+
+  async createProviderConnection(user: PlatformUser, input: CreateProviderConnectionInput) {
+    const scope = this.requireProviderConnectionScope(input.scope);
+    const organization =
+      scope === "organization" ? await this.requireOrganizationOwner(user) : null;
+    const timestamp = now();
+    const connection = await this.store.createAgentProviderConnection({
+      id: makeId("provider"),
+      scope,
+      ownerUserId: scope === "user" ? user.id : null,
+      organizationId: organization?.id ?? null,
+      provider: requireText(input.provider, "provider"),
+      label: requireText(input.label, "label"),
+      authType: this.requireProviderAuthType(input.authType),
+      allowedArtifactTypes: input.allowedArtifactTypes.map((value) => this.requireServiceTargetType(value)),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    return {
+      connection: this.toPublicProviderConnection(connection),
+    };
+  }
+
+  async listAgentExecutions(user: PlatformUser) {
+    const state = await this.store.readState();
+    return {
+      executions: state.agentExecutionRecords
+        .filter((record) => record.actorUserId === user.id)
+        .map((record) => this.toPublicAgentExecutionRecord(record))
+        .sort(byCreatedAt),
     };
   }
 
@@ -621,6 +1235,9 @@ export class ApplicationServices {
       requesterId: user.id,
       type: "grant_proposal",
       grantId: grant.id,
+      targetType: null,
+      targetId: null,
+      specialistRole: null,
       title: `Grant proposal for ${grant.title}`,
       description: [
         `Prepare and submit a proposal for ${grant.title}.`,
@@ -647,11 +1264,26 @@ export class ApplicationServices {
   async createJob(user: PlatformUser, input: CreateJobInput) {
     this.requireRole(user, "requester");
 
+    const targetType =
+      input.targetType === null || input.targetType === undefined
+        ? null
+        : this.requireServiceTargetType(input.targetType);
+    const targetId = targetType ? requireText(input.targetId ?? "", "targetId") : null;
+    if (targetType && targetId) {
+      await this.requireServiceTargetOwner(user, targetType, targetId);
+    }
+
     const job: PlatformJob = {
       id: makeId("job"),
       requesterId: user.id,
       type: "general",
       grantId: null,
+      targetType,
+      targetId,
+      specialistRole:
+        input.specialistRole === null || input.specialistRole === undefined
+          ? null
+          : this.requireSpecialistServiceRole(input.specialistRole),
       title: requireText(input.title, "title"),
       description: requireText(input.description, "description"),
       fundingNeed: requireText(input.fundingNeed, "fundingNeed"),
@@ -685,6 +1317,10 @@ export class ApplicationServices {
       id: makeId("offer"),
       jobId: job.id,
       specialistId: user.id,
+      specialistRole:
+        input.specialistRole === null || input.specialistRole === undefined
+          ? job.specialistRole
+          : this.requireSpecialistServiceRole(input.specialistRole),
       message: requireText(input.message, "message"),
       amountUsd: normalizeUsd(input.amountUsd),
       payoutAddress: requireText(input.payoutAddress, "payoutAddress"),
@@ -1008,6 +1644,28 @@ export class ApplicationServices {
       this.toTrackedGrant(completedRequest, opportunity, existingGrants),
     );
     const savedGrants = await this.store.replaceTrackedGrants(completedRequest.id, grants);
+    const existingReport = await this.store.findGrantReportByRequestId(completedRequest.id);
+    await this.store.upsertGrantReport({
+      id: existingReport?.id ?? makeId("report"),
+      requestId: completedRequest.id,
+      requesterId: completedRequest.requesterId,
+      businessCaseId: result.report.businessCaseId,
+      executiveSummary: result.report.executiveSummary,
+      searchSummary: result.report.searchSummary,
+      opportunities: result.report.opportunities.map((opportunity) => ({
+        ...opportunity,
+        eligibilityNotes: [...opportunity.eligibilityNotes],
+        citations: [...opportunity.citations],
+        nextActions: [...opportunity.nextActions],
+      })),
+      rejectedLeads: result.report.rejectedLeads.map((lead) => ({
+        ...lead,
+        citations: [...lead.citations],
+      })),
+      nextActions: [...result.report.nextActions],
+      createdAt: existingReport?.createdAt ?? completedAt,
+      updatedAt: completedAt,
+    });
 
     return {
       request: completedRequest,
@@ -1082,12 +1740,26 @@ export class ApplicationServices {
   }
 
   private phaseForTool(toolName: string): ResearchRunPhase {
+    if (toolName === "plan_research_round") {
+      return "briefing";
+    }
+
     if (toolName === "search_web") {
       return "searching";
     }
 
     if (toolName === "read_source_page") {
       return "reading";
+    }
+
+    if (
+      toolName === "review_research_round" ||
+      toolName === "plan_report" ||
+      toolName === "draft_report" ||
+      toolName === "review_report" ||
+      toolName === "rerank_report"
+    ) {
+      return "synthesizing";
     }
 
     if (toolName === "publish_report") {
@@ -1098,12 +1770,36 @@ export class ApplicationServices {
   }
 
   private titleForTool(toolName: string): string {
+    if (toolName === "plan_research_round") {
+      return "Planning source fan-out";
+    }
+
     if (toolName === "search_web") {
       return "Searching for opportunities";
     }
 
     if (toolName === "read_source_page") {
       return "Reading source material";
+    }
+
+    if (toolName === "review_research_round") {
+      return "Reviewing and ranking evidence";
+    }
+
+    if (toolName === "plan_report") {
+      return "Planning the final brief";
+    }
+
+    if (toolName === "draft_report") {
+      return "Writing the final brief";
+    }
+
+    if (toolName === "review_report") {
+      return "Reviewing the final brief";
+    }
+
+    if (toolName === "rerank_report") {
+      return "Re-ranking the recommendations";
     }
 
     if (toolName === "publish_report") {
@@ -1114,12 +1810,36 @@ export class ApplicationServices {
   }
 
   private detailForTool(toolName: string, args: unknown): string {
+    if (toolName === "plan_research_round" && this.isRecord(args) && typeof args.round === "number") {
+      return `Round ${args.round}: planning the next source collection pass.`;
+    }
+
     if (toolName === "search_web" && this.isRecord(args) && typeof args.query === "string") {
       return `Query: ${args.query}`;
     }
 
     if (toolName === "read_source_page" && this.isRecord(args) && typeof args.url === "string") {
       return `Source: ${args.url}`;
+    }
+
+    if (toolName === "review_research_round" && this.isRecord(args) && typeof args.round === "number") {
+      return `Round ${args.round}: scoring sources and grant candidates from the latest pass.`;
+    }
+
+    if (toolName === "plan_report") {
+      return "Checking whether the evidence base is strong enough to draft the final report.";
+    }
+
+    if (toolName === "draft_report") {
+      return "Drafting the ranked grant brief from the collected evidence.";
+    }
+
+    if (toolName === "review_report") {
+      return "Checking the draft for coverage gaps, unsupported claims, and ranking issues.";
+    }
+
+    if (toolName === "rerank_report") {
+      return "Applying the review feedback and final ranking adjustments.";
     }
 
     if (toolName === "publish_report") {
@@ -1130,12 +1850,36 @@ export class ApplicationServices {
   }
 
   private progressSummaryForTool(toolName: string, args: unknown): string {
+    if (toolName === "plan_research_round" && this.isRecord(args) && typeof args.round === "number") {
+      return `Planning research round ${args.round}.`;
+    }
+
     if (toolName === "search_web" && this.isRecord(args) && typeof args.query === "string") {
       return `Searching the web for: ${args.query}`;
     }
 
     if (toolName === "read_source_page" && this.isRecord(args) && typeof args.url === "string") {
       return `Reading and verifying: ${args.url}`;
+    }
+
+    if (toolName === "review_research_round" && this.isRecord(args) && typeof args.round === "number") {
+      return `Reviewing and ranking evidence from round ${args.round}.`;
+    }
+
+    if (toolName === "plan_report") {
+      return "Checking whether the collected evidence is ready for report writing.";
+    }
+
+    if (toolName === "draft_report") {
+      return "Writing the ranked grant brief.";
+    }
+
+    if (toolName === "review_report") {
+      return "Reviewing the draft for missing evidence and ranking mistakes.";
+    }
+
+    if (toolName === "rerank_report") {
+      return "Applying review feedback and finalizing the ranking.";
     }
 
     if (toolName === "publish_report") {
@@ -1180,6 +1924,56 @@ export class ApplicationServices {
 
   private isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object";
+  }
+
+  private normalizeOptionalText(value: unknown): string | null {
+    if (typeof value !== "string") {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private normalizeOrganizationPersonnel(value: unknown): PlatformOrganizationPersonnel[] {
+    if (!Array.isArray(value)) {
+      throw new AppError(400, "invalid_input", "personnel must be a list of contacts.");
+    }
+
+    return value.map((entry) => {
+      if (!this.isRecord(entry)) {
+        throw new AppError(400, "invalid_input", "personnel entries must be objects.");
+      }
+
+      const yearsExperience = entry.yearsExperience;
+      const normalizedYears =
+        yearsExperience === null || yearsExperience === undefined
+          ? null
+          : typeof yearsExperience === "number" && Number.isFinite(yearsExperience) && yearsExperience >= 0
+            ? yearsExperience
+            : Number.NaN;
+      if (Number.isNaN(normalizedYears)) {
+        throw new AppError(
+          400,
+          "invalid_input",
+          "personnel.yearsExperience must be a non-negative number when provided.",
+        );
+      }
+
+      return {
+        id: makeId("person"),
+        fullName: requireText(
+          typeof entry.fullName === "string" ? entry.fullName : "",
+          "personnel.fullName",
+        ),
+        roleTitle: requireText(
+          typeof entry.roleTitle === "string" ? entry.roleTitle : "",
+          "personnel.roleTitle",
+        ),
+        yearsExperience: normalizedYears,
+        email: this.normalizeOptionalText(entry.email),
+      };
+    });
   }
 
   private async verifyBrowserIdentity(
@@ -1334,6 +2128,140 @@ export class ApplicationServices {
     };
   }
 
+  private buildCatalogTags(grant: PlatformTrackedGrant): string[] {
+    const tags = [grant.fundingType, grant.geography, grant.status]
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+
+    return [...new Set(tags)];
+  }
+
+  private buildDefaultWorkspaceSections(
+    documentType: ApplicationDocumentType,
+  ): PlatformApplicationWorkspaceSection[] {
+    const definitions: Array<{
+      key: string;
+      title: string;
+      prompt?: string;
+    }> =
+      documentType === "loi"
+        ? [
+            { key: "organization_profile", title: "Organization profile" },
+            { key: "need_statement", title: "Need statement", prompt: "Describe the need and fit." },
+          ]
+        : [
+            { key: "organization_profile", title: "Organization profile" },
+            { key: "project_summary", title: "Project summary", prompt: "Describe the proposed work." },
+          ];
+
+    return definitions.map((definition, index) => ({
+      id: makeId("section"),
+      key: definition.key,
+      title: definition.title,
+      stepName: null,
+      prompt: definition.prompt ?? null,
+      examples: [],
+      validation: { minWords: null, maxWords: null },
+      orderIndex: index,
+      content: "",
+      createdAt: "",
+      updatedAt: "",
+    }));
+  }
+
+  private normalizeSectionDefinitions(
+    sections: UpsertGrantApplicationSchemaInput["sections"],
+  ) {
+    if (!Array.isArray(sections) || sections.length === 0) {
+      throw new AppError(400, "invalid_input", "sections must contain at least one section.");
+    }
+
+    return sections.map((section) => {
+      const validation = section.validation ?? {};
+      return {
+        id: makeId("section_def"),
+        key: requireText(section.key, "sections.key"),
+        title: requireText(section.title, "sections.title"),
+        stepName: this.normalizeOptionalText(section.stepName),
+        prompt: this.normalizeOptionalText(section.prompt),
+        examples: Array.isArray(section.examples) ? normalizeTextList(section.examples, "sections.examples") : [],
+        validation: {
+          minWords:
+            typeof validation.minWords === "number" && Number.isFinite(validation.minWords)
+              ? validation.minWords
+              : null,
+          maxWords:
+            typeof validation.maxWords === "number" && Number.isFinite(validation.maxWords)
+              ? validation.maxWords
+              : null,
+        },
+      };
+    });
+  }
+
+  private instantiateWorkspaceSections(
+    definitions: Array<{
+      id: string;
+      key: string;
+      title: string;
+      stepName: string | null;
+      prompt: string | null;
+      examples: string[];
+      validation: { minWords: number | null; maxWords: number | null };
+    }>,
+    organization: PlatformOrganization | null,
+    grant: PlatformGrantCatalogEntry | null,
+    timestamp: string,
+  ): PlatformApplicationWorkspaceSection[] {
+    return definitions.map((section, index) => ({
+      ...section,
+      orderIndex: index,
+      content: this.prefillWorkspaceSection(section.key, organization, grant),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+  }
+
+  private prefillWorkspaceSection(
+    sectionKey: string,
+    organization: PlatformOrganization | null,
+    grant: PlatformGrantCatalogEntry | null,
+  ): string {
+    if (!organization) {
+      return "";
+    }
+
+    if (sectionKey === "organization_profile") {
+      const audience = organization.targetDemographics.join(", ");
+      return [
+        `${organization.name} is a ${organization.organizationType.replaceAll("_", " ")} organization focused on ${organization.missionStatement}`,
+        audience ? `It primarily serves ${audience}.` : "",
+        grant ? `This application targets ${grant.title} from ${grant.sponsor}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    return "";
+  }
+
+  private composeWorkspaceSectionContent(
+    section: PlatformApplicationWorkspaceSection,
+    organization: PlatformOrganization | null,
+    grant: PlatformGrantCatalogEntry | null,
+  ): string {
+    const organizationName = organization?.name ?? "The organization";
+    if (section.key === "project_summary") {
+      return `${organizationName} will use ${grant?.title ?? "the selected grant"} to expand project delivery, document measurable outcomes, and align the proposal with ${grant?.sponsor ?? "the funder"} priorities.`;
+    }
+
+    if (section.key === "need_statement") {
+      return `${organizationName} is positioned to address the stated need because ${organization?.missionStatement ?? "it has the relevant operating context"}. This section connects the need to a concrete delivery plan and measurable community outcomes.`;
+    }
+
+    return section.content || this.prefillWorkspaceSection(section.key, organization, grant);
+  }
+
   private async getScenarioNameMap(
     user: PlatformUser,
     state: PlatformState,
@@ -1368,12 +2296,212 @@ export class ApplicationServices {
     return role;
   }
 
+  private requireOrganizationTypeValue(
+    organizationType: PlatformOrganization["organizationType"],
+  ): PlatformOrganization["organizationType"] {
+    switch (organizationType) {
+      case "nonprofit":
+      case "fiscal_sponsor":
+      case "school":
+      case "government":
+      case "tribal_entity":
+      case "for_profit":
+      case "other":
+        return organizationType;
+      default:
+        throw new AppError(
+          400,
+          "invalid_organization_type",
+          "organizationType is not recognized.",
+        );
+    }
+  }
+
+  private requireOrganizationOperatingScopeValue(
+    operatingScope: PlatformOrganization["operatingScope"],
+  ): PlatformOrganization["operatingScope"] {
+    switch (operatingScope) {
+      case "local":
+      case "regional":
+      case "national":
+      case "international":
+        return operatingScope;
+      default:
+        throw new AppError(
+          400,
+          "invalid_operating_scope",
+          "operatingScope must be local, regional, national, or international.",
+        );
+    }
+  }
+
   private requireGrantQueueState(queueState: GrantQueueState): GrantQueueState {
     if (queueState !== "active" && queueState !== "inactive") {
       throw new AppError(400, "invalid_queue_state", "queueState must be active or inactive.");
     }
 
     return queueState;
+  }
+
+  private requireApplicationDocumentType(documentType: ApplicationDocumentType): ApplicationDocumentType {
+    switch (documentType) {
+      case "grant_proposal":
+      case "loi":
+      case "budget_narrative":
+      case "other":
+        return documentType;
+      default:
+        throw new AppError(400, "invalid_document_type", "documentType is not recognized.");
+    }
+  }
+
+  private requireServiceTargetType(targetType: ServiceTargetType): ServiceTargetType {
+    switch (targetType) {
+      case "grant_catalog_entry":
+      case "application_workspace":
+      case "workspace_section":
+        return targetType;
+      default:
+        throw new AppError(400, "invalid_target_type", "targetType is not recognized.");
+    }
+  }
+
+  private requireSpecialistServiceRole(role: SpecialistServiceRole): SpecialistServiceRole {
+    switch (role) {
+      case "researcher":
+      case "writer":
+      case "reviewer":
+      case "submission_specialist":
+        return role;
+      default:
+        throw new AppError(400, "invalid_specialist_role", "specialistRole is not recognized.");
+    }
+  }
+
+  private requireProviderConnectionScope(
+    scope: AgentProviderConnectionScope,
+  ): AgentProviderConnectionScope {
+    switch (scope) {
+      case "user":
+      case "organization":
+        return scope;
+      default:
+        throw new AppError(400, "invalid_provider_scope", "scope must be user or organization.");
+    }
+  }
+
+  private requireProviderAuthType(authType: AgentProviderAuthType): AgentProviderAuthType {
+    switch (authType) {
+      case "byok":
+      case "oauth":
+        return authType;
+      default:
+        throw new AppError(400, "invalid_provider_auth_type", "authType must be byok or oauth.");
+    }
+  }
+
+  private async requireCatalogGrant(grantId: string): Promise<PlatformGrantCatalogEntry> {
+    const grant = await this.store.findGrantCatalogEntryById(grantId);
+    if (!grant) {
+      throw new AppError(404, "catalog_grant_not_found", "The requested catalog grant does not exist.");
+    }
+
+    return grant;
+  }
+
+  private async isCatalogGrantBookmarked(userId: string, grantId: string): Promise<boolean> {
+    const state = await this.store.readState();
+    return state.grantBookmarks.some((bookmark) => bookmark.userId === userId && bookmark.grantId === grantId);
+  }
+
+  private async requireApplicationTemplateOwner(
+    user: PlatformUser,
+    templateId: string,
+  ): Promise<PlatformApplicationTemplate> {
+    const template = await this.store.findApplicationTemplateById(templateId);
+    if (!template || template.ownerUserId !== user.id) {
+      throw new AppError(404, "application_template_not_found", "The requested template does not exist.");
+    }
+
+    return template;
+  }
+
+  private async requireApplicationWorkspaceOwner(
+    user: PlatformUser,
+    workspaceId: string,
+  ): Promise<PlatformApplicationWorkspace> {
+    const workspace = await this.store.findApplicationWorkspaceById(workspaceId);
+    if (!workspace) {
+      throw new AppError(404, "application_workspace_not_found", "The requested workspace does not exist.");
+    }
+
+    if (workspace.requesterId !== user.id) {
+      throw new AppError(403, "forbidden", "You do not have access to this application workspace.");
+    }
+
+    return workspace;
+  }
+
+  private async requireOrganizationOwner(user: PlatformUser): Promise<PlatformOrganization> {
+    const organization = await this.store.findOrganizationByOwnerUserId(user.id);
+    if (!organization) {
+      throw new AppError(409, "organization_required", "Create an organization profile before using this scope.");
+    }
+
+    return organization;
+  }
+
+  private async requireProviderConnectionForAction(
+    user: PlatformUser,
+    connectionId: string,
+    targetType: ServiceTargetType,
+  ): Promise<PlatformAgentProviderConnection> {
+    const connection = await this.store.findAgentProviderConnectionById(connectionId);
+    if (!connection) {
+      throw new AppError(404, "provider_connection_not_found", "The requested provider connection does not exist.");
+    }
+
+    const ownsConnection =
+      (connection.scope === "user" && connection.ownerUserId === user.id) ||
+      (connection.scope === "organization" &&
+        connection.organizationId === (await this.store.findOrganizationByOwnerUserId(user.id))?.id);
+    if (!ownsConnection) {
+      throw new AppError(403, "forbidden", "You do not have access to this provider connection.");
+    }
+
+    if (!connection.allowedArtifactTypes.includes(targetType)) {
+      throw new AppError(
+        403,
+        "provider_connection_forbidden",
+        "This provider connection is not allowed to act on the requested artifact type.",
+      );
+    }
+
+    return connection;
+  }
+
+  private async requireServiceTargetOwner(
+    user: PlatformUser,
+    targetType: ServiceTargetType,
+    targetId: string,
+  ): Promise<void> {
+    if (targetType === "grant_catalog_entry") {
+      await this.requireCatalogGrant(targetId);
+      return;
+    }
+
+    if (targetType === "application_workspace") {
+      await this.requireApplicationWorkspaceOwner(user, targetId);
+      return;
+    }
+
+    const workspaceState = await this.store.readState();
+    const ownerWorkspace = workspaceState.applicationWorkspaces.find((workspace) =>
+      workspace.requesterId === user.id && workspace.sections.some((section) => section.id === targetId),
+    );
+    if (!ownerWorkspace) {
+      throw new AppError(404, "workspace_section_not_found", "The requested workspace section does not exist.");
+    }
   }
 
   private async requireResearchRequestOwner(
