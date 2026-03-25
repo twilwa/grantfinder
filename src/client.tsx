@@ -1,13 +1,51 @@
 // ABOUTME: Implements the authenticated browser workspace for marketplace, research requests, and tracked grants.
 // ABOUTME: The client stays thin and uses the same REST routes exposed for curl and JSON-RPC users.
 
-import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { PrivyProvider, usePrivy, useWallets } from "@privy-io/react-auth";
 import { SmartWalletsProvider } from "@privy-io/react-auth/smart-wallets";
 import { base, baseSepolia } from "viem/chains";
 
 import type { BrowserClientConfig } from "./platform-types.js";
+import {
+  ApplicationWorkspaceView,
+  CatalogWorkspaceView,
+  OrganizationWorkspaceView,
+  ProviderWorkspaceView,
+  type AgentExecutionSummary,
+  type ApplicationDocumentType,
+  type ApplicationTemplateSummary,
+  type ApplicationWorkspaceSummary,
+  type CatalogGrantDetailPayload,
+  type CatalogGrantSummary,
+  type OrganizationProfileInput,
+  type OrganizationPersonnelInput,
+  type OrganizationSummary,
+  type ProviderArtifactType,
+  type ProviderAuthType,
+  type ProviderConnectionScope,
+  type ProviderConnectionSummary,
+  type SectionDefinitionInput,
+} from "./client-operations.js";
+import {
+  SectionCard,
+  SidebarButton,
+  StatusBadge,
+  buttonStyle,
+  formCardStyle,
+  formatJson,
+  formatTimestamp,
+  inputStyle,
+  parseJsonResponse,
+  parseTextList,
+  requestPhaseLabel,
+  requestStatusTone,
+  shellCardStyle,
+  subtleCardStyle,
+  textareaStyle,
+  findSmartWalletAddress,
+} from "./client-shared.js";
 
 declare global {
   interface Window {
@@ -16,7 +54,15 @@ declare global {
 }
 
 type UserRole = "requester" | "specialist";
-type WorkspaceTab = "request-marketplace" | "research-dashboard" | "my-requests" | "my-grants";
+type WorkspaceTab =
+  | "request-marketplace"
+  | "research-dashboard"
+  | "my-requests"
+  | "my-grants"
+  | "organization"
+  | "catalog"
+  | "applications"
+  | "providers";
 
 interface PublicUser {
   id: string;
@@ -179,10 +225,30 @@ interface WorkspaceGrant {
 
 interface WorkspacePayload {
   user: PublicUser;
+  organization: OrganizationSummary | null;
   marketplace: DashboardPayload;
   scenarios: ResearchScenarioSummary[];
   requests: WorkspaceRequest[];
   grants: WorkspaceGrant[];
+  reports: Array<{
+    id: string;
+    requestId: string;
+    requesterId: string;
+    businessCaseId: string;
+    executiveSummary: string;
+    searchSummary: string;
+    opportunityCount: number;
+    opportunities: Array<{ title: string }>;
+    rejectedLeads: Array<{ title: string }>;
+    nextActions: string[];
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  catalog: CatalogGrantSummary[];
+  applicationTemplates: ApplicationTemplateSummary[];
+  applicationWorkspaces: ApplicationWorkspaceSummary[];
+  providerConnections: ProviderConnectionSummary[];
+  executions: AgentExecutionSummary[];
 }
 
 interface ResearchRequestDetail extends WorkspaceRequest {
@@ -190,224 +256,6 @@ interface ResearchRequestDetail extends WorkspaceRequest {
 }
 
 const config = window.__GRANTFINDER_CONFIG__ ?? { privyAppId: null, x402Mode: "challenge" as const };
-
-const shellCardStyle: CSSProperties = {
-  padding: "1.1rem",
-  borderRadius: "18px",
-  background: "rgba(255,255,255,0.68)",
-  border: "1px solid rgba(216, 204, 184, 0.95)",
-  boxShadow: "0 16px 36px rgba(55, 45, 24, 0.06)",
-};
-
-const subtleCardStyle: CSSProperties = {
-  ...shellCardStyle,
-  background: "rgba(255, 255, 255, 0.5)",
-  boxShadow: "none",
-};
-
-const formCardStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.75rem",
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  border: "1px solid #b8b4ab",
-  borderRadius: "12px",
-  padding: "0.72rem 0.8rem",
-  background: "rgba(255,255,255,0.82)",
-  color: "#1f2a1f",
-};
-
-const textareaStyle: CSSProperties = {
-  ...inputStyle,
-  minHeight: "7rem",
-  resize: "vertical",
-};
-
-const primaryButtonStyle: CSSProperties = {
-  border: 0,
-  borderRadius: "999px",
-  padding: "0.78rem 1.1rem",
-  background: "linear-gradient(135deg, #24543a 0%, #173b28 100%)",
-  color: "white",
-  cursor: "pointer",
-  fontWeight: 600,
-};
-
-const secondaryButtonStyle: CSSProperties = {
-  ...primaryButtonStyle,
-  background: "rgba(255,255,255,0.9)",
-  color: "#173b28",
-  border: "1px solid rgba(36, 84, 58, 0.22)",
-};
-
-function buttonStyle(disabled = false, variant: "primary" | "secondary" = "primary"): CSSProperties {
-  const baseStyle = variant === "primary" ? primaryButtonStyle : secondaryButtonStyle;
-  return {
-    ...baseStyle,
-    opacity: disabled ? 0.55 : 1,
-    cursor: disabled ? "not-allowed" : "pointer",
-  };
-}
-
-function formatJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
-}
-
-function formatTimestamp(value: string | null): string {
-  if (!value) {
-    return "Not yet";
-  }
-
-  return new Date(value).toLocaleString();
-}
-
-function parseTextList(value: string): string[] {
-  return value
-    .split(/[\n,]/u)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function requestStatusTone(status: WorkspaceRequest["status"]): "neutral" | "good" | "warn" | "bad" {
-  if (status === "completed") {
-    return "good";
-  }
-
-  if (status === "failed") {
-    return "bad";
-  }
-
-  if (status === "running") {
-    return "warn";
-  }
-
-  return "neutral";
-}
-
-function requestPhaseLabel(phase: WorkspaceRequest["runPhase"]): string {
-  if (phase === "idle") {
-    return "Idle";
-  }
-
-  return `${phase.charAt(0).toUpperCase()}${phase.slice(1)}`;
-}
-
-function findSmartWalletAddress(user: SessionPayload["user"] | null, linkedAccounts: unknown[] | undefined): string | null {
-  if (user?.smartWalletAddress) {
-    return user.smartWalletAddress;
-  }
-
-  const smartWallet = linkedAccounts?.find((account): account is Record<string, unknown> => {
-    if (!account || typeof account !== "object") {
-      return false;
-    }
-
-    const candidate = account as Record<string, unknown>;
-    return candidate.type === "smart_wallet";
-  });
-
-  return typeof smartWallet?.["address"] === "string" ? smartWallet["address"] : null;
-}
-
-async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const payload = (await response.json()) as T & { error?: { message?: string } };
-  if (!response.ok) {
-    const message =
-      typeof payload === "object" && payload && "error" in payload && payload.error?.message
-        ? payload.error.message
-        : `Request failed with status ${response.status}`;
-    throw new Error(message);
-  }
-
-  return payload;
-}
-
-function StatusBadge({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "good" | "warn" | "bad" }) {
-  const palette =
-    tone === "good"
-      ? { background: "#d6e7db", color: "#1f5b38" }
-      : tone === "warn"
-        ? { background: "#f4e1c8", color: "#8c5b1f" }
-        : tone === "bad"
-          ? { background: "#f4d6d1", color: "#8f2d1f" }
-          : { background: "rgba(255,255,255,0.8)", color: "#384438" };
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "0.28rem 0.65rem",
-        borderRadius: "999px",
-        fontSize: "0.84rem",
-        fontWeight: 600,
-        ...palette,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
-function SidebarButton({
-  active,
-  label,
-  description,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        width: "100%",
-        border: active ? "1px solid rgba(36, 84, 58, 0.25)" : "1px solid rgba(216, 204, 184, 0.95)",
-        borderRadius: "18px",
-        background: active ? "linear-gradient(135deg, rgba(36,84,58,0.16), rgba(36,84,58,0.06))" : "rgba(255,255,255,0.75)",
-        color: "#1f2a1f",
-        textAlign: "left",
-        padding: "0.95rem 1rem",
-        cursor: "pointer",
-      }}
-    >
-      <div style={{ fontWeight: 700 }}>{label}</div>
-      <div style={{ fontSize: "0.9rem", color: "#566154", marginTop: "0.3rem", lineHeight: 1.45 }}>
-        {description}
-      </div>
-    </button>
-  );
-}
-
-function SectionCard({
-  title,
-  description,
-  children,
-  style,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-  style?: CSSProperties;
-}) {
-  return (
-    <section style={{ ...shellCardStyle, ...style }}>
-      <div style={{ marginBottom: "0.9rem" }}>
-        <h2 style={{ margin: 0, fontSize: "1.35rem" }}>{title}</h2>
-        {description ? (
-          <p style={{ margin: "0.45rem 0 0", color: "#566154", lineHeight: 1.5 }}>{description}</p>
-        ) : null}
-      </div>
-      {children}
-    </section>
-  );
-}
 
 function PrivyDashboardApp() {
   const { ready, authenticated, login, logout, getAccessToken, createWallet, user } = usePrivy();
@@ -449,6 +297,8 @@ function PrivyDashboardApp() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [selectedGrantId, setSelectedGrantId] = useState<string | null>(null);
+  const [selectedCatalogGrantId, setSelectedCatalogGrantId] = useState<string | null>(null);
+  const [catalogGrantDetail, setCatalogGrantDetail] = useState<CatalogGrantDetailPayload | null>(null);
 
   const linkedAccounts = (user?.linkedAccounts as unknown[] | undefined) ?? [];
   const embeddedWalletAddress = wallets[0]?.address ?? null;
@@ -490,6 +340,22 @@ function PrivyDashboardApp() {
       setWorkspace(await parseJsonResponse<WorkspacePayload>(response));
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : "Failed to load workspace.");
+    }
+  }
+
+  async function refreshCatalogGrantDetail(grantId: string, quiet = false) {
+    if (!authenticated) {
+      setCatalogGrantDetail(null);
+      return;
+    }
+
+    try {
+      const response = await authedFetch(`/api/catalog/grants/${grantId}`);
+      setCatalogGrantDetail(await parseJsonResponse<CatalogGrantDetailPayload>(response));
+    } catch (fetchError) {
+      if (!quiet) {
+        setError(fetchError instanceof Error ? fetchError.message : "Failed to load catalog grant detail.");
+      }
     }
   }
 
@@ -623,6 +489,19 @@ function PrivyDashboardApp() {
   }, [workspace?.grants, selectedGrantId]);
 
   useEffect(() => {
+    const catalog = workspace?.catalog ?? [];
+    if (catalog.length === 0) {
+      setSelectedCatalogGrantId(null);
+      setCatalogGrantDetail(null);
+      return;
+    }
+
+    if (!selectedCatalogGrantId || !catalog.some((grant) => grant.id === selectedCatalogGrantId)) {
+      setSelectedCatalogGrantId(catalog[0].id);
+    }
+  }, [workspace?.catalog, selectedCatalogGrantId]);
+
+  useEffect(() => {
     if (!selectedRequestId || !authenticated) {
       setRequestDetail(null);
       return;
@@ -630,6 +509,15 @@ function PrivyDashboardApp() {
 
     void refreshRequestDetail(selectedRequestId);
   }, [selectedRequestId, authenticated]);
+
+  useEffect(() => {
+    if (!selectedCatalogGrantId || !authenticated) {
+      setCatalogGrantDetail(null);
+      return;
+    }
+
+    void refreshCatalogGrantDetail(selectedCatalogGrantId);
+  }, [selectedCatalogGrantId, authenticated]);
 
   useEffect(() => {
     if (!selectedRequestId || requestDetail?.status !== "running") {
@@ -677,6 +565,185 @@ function PrivyDashboardApp() {
       setLatestSecret(payload.secret);
       setMessage("Agent token created.");
       await refreshSession();
+    });
+  }
+
+  async function saveOrganizationProfile(input: OrganizationProfileInput) {
+    await runAction("organization-profile", async () => {
+      const response = await authedFetch("/api/organization", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...input,
+          personnel:
+            workspace?.organization?.personnel.map((person) => ({
+              fullName: person.fullName,
+              roleTitle: person.roleTitle,
+              yearsExperience: person.yearsExperience,
+              email: person.email,
+            })) ?? [],
+        }),
+      });
+      const payload = await parseJsonResponse<{ organization: OrganizationSummary }>(response);
+      setMessage(`Organization profile saved for ${payload.organization.name}.`);
+      await refreshWorkspace();
+    });
+  }
+
+  async function addOrganizationPersonnel(input: OrganizationPersonnelInput) {
+    await runAction("organization-personnel", async () => {
+      const response = await authedFetch("/api/organization/personnel", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      const payload = await parseJsonResponse<{ personnel: { fullName: string } }>(response);
+      setMessage(`Added ${payload.personnel.fullName} to the organization team.`);
+      await refreshWorkspace();
+    });
+  }
+
+  async function acceptOrganizationInvite(inviteId: string) {
+    await runAction(`organization-invite-${inviteId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/organization/invites/${inviteId}/accept`, {
+          method: "POST",
+        }),
+      );
+      setMessage("Invite accepted.");
+      await refreshWorkspace();
+    });
+  }
+
+  async function toggleCatalogBookmark(grantId: string, bookmarked: boolean) {
+    await runAction(`catalog-bookmark-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/catalog/grants/${grantId}/bookmark`, {
+          method: "PUT",
+          body: JSON.stringify({ bookmarked }),
+        }),
+      );
+      setMessage(bookmarked ? "Grant bookmarked." : "Grant removed from bookmarks.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId, true);
+    });
+  }
+
+  async function saveCatalogSchema(
+    grantId: string,
+    input: {
+      name: string;
+      documentType: ApplicationDocumentType;
+      sections: SectionDefinitionInput[];
+    },
+  ) {
+    await runAction(`catalog-schema-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/catalog/grants/${grantId}/schema`, {
+          method: "PUT",
+          body: JSON.stringify(input),
+        }),
+      );
+      setMessage("Application schema saved.");
+      await refreshCatalogGrantDetail(grantId);
+    });
+  }
+
+  async function createApplicationTemplate(input: {
+    name: string;
+    documentType: ApplicationDocumentType;
+    sections: SectionDefinitionInput[];
+  }) {
+    await runAction("application-template", async () => {
+      const response = await authedFetch("/api/application-templates", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      const payload = await parseJsonResponse<{ template: ApplicationTemplateSummary }>(response);
+      setMessage(`Template "${payload.template.name}" saved.`);
+      await refreshWorkspace();
+      setActiveTab("applications");
+    });
+  }
+
+  async function createApplicationWorkspace(input: {
+    catalogGrantId?: string | null;
+    templateId?: string | null;
+    documentType: ApplicationDocumentType;
+  }) {
+    const actionKey = input.catalogGrantId ? `catalog-workspace-${input.catalogGrantId}` : "application-workspace";
+    await runAction(actionKey, async () => {
+      const response = await authedFetch("/api/application-workspaces", {
+        method: "POST",
+        body: JSON.stringify({
+          catalogGrantId: input.catalogGrantId ?? null,
+          templateId: input.templateId ?? null,
+          documentType: input.documentType,
+        }),
+      });
+      const payload = await parseJsonResponse<{ workspace: ApplicationWorkspaceSummary }>(response);
+      setMessage(`Workspace "${payload.workspace.title}" created.`);
+      await refreshWorkspace();
+      setActiveTab("applications");
+    });
+  }
+
+  async function updateApplicationWorkspaceSection(workspaceId: string, sectionId: string, content: string) {
+    await runAction(`application-section-${sectionId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/application-workspaces/${workspaceId}/sections/${sectionId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ content }),
+        }),
+      );
+      setMessage("Workspace section saved.");
+      await refreshWorkspace();
+    });
+  }
+
+  async function generateApplicationWorkspaceSection(
+    workspaceId: string,
+    sectionId: string,
+    providerConnectionId: string | null,
+  ) {
+    await runAction(`application-generate-${sectionId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/application-workspaces/${workspaceId}/sections/${sectionId}/generate`, {
+          method: "POST",
+          body: JSON.stringify(providerConnectionId ? { providerConnectionId } : {}),
+        }),
+      );
+      setMessage("Generated a fresh section draft.");
+      await refreshWorkspace();
+    });
+  }
+
+  async function finalizeApplicationWorkspace(workspaceId: string) {
+    await runAction(`application-finalize-${workspaceId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/application-workspaces/${workspaceId}/finalize`, {
+          method: "POST",
+        }),
+      );
+      setMessage("Application workspace finalized.");
+      await refreshWorkspace();
+    });
+  }
+
+  async function createProviderConnection(input: {
+    scope: ProviderConnectionScope;
+    provider: string;
+    label: string;
+    authType: ProviderAuthType;
+    allowedArtifactTypes: ProviderArtifactType[];
+  }) {
+    await runAction("provider-connection", async () => {
+      const response = await authedFetch("/api/provider-connections", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      const payload = await parseJsonResponse<{ connection: ProviderConnectionSummary }>(response);
+      setMessage(`Provider connection "${payload.connection.label}" saved.`);
+      await refreshWorkspace();
+      setActiveTab("providers");
     });
   }
 
@@ -865,17 +932,30 @@ function PrivyDashboardApp() {
   const scenarios = workspace?.scenarios ?? [];
   const requests = workspace?.requests ?? [];
   const grants = workspace?.grants ?? [];
+  const catalog = workspace?.catalog ?? [];
+  const applicationTemplates = workspace?.applicationTemplates ?? [];
+  const applicationWorkspaces = workspace?.applicationWorkspaces ?? [];
+  const providerConnections = workspace?.providerConnections ?? [];
+  const executions = workspace?.executions ?? [];
+  const organization = workspace?.organization ?? null;
   const selectedJob = dashboard?.jobs.find((job) => job.id === selectedJobId) ?? null;
   const selectedRequestSummary = requests.find((request) => request.id === selectedRequestId) ?? null;
   const selectedRequest =
     requestDetail && requestDetail.id === selectedRequestId ? requestDetail : selectedRequestSummary;
   const selectedGrant = grants.find((grant) => grant.id === selectedGrantId) ?? null;
+  const selectedCatalogGrantSummary = catalog.find((grant) => grant.id === selectedCatalogGrantId) ?? null;
   const selectedJobOffers = dashboard?.offers.filter((offer) => offer.jobId === selectedJob?.id) ?? [];
   const selectedRequestGrants =
     requestDetail && requestDetail.id === selectedRequestId
       ? requestDetail.grants
       : grants.filter((grant) => grant.requestId === selectedRequest?.id);
   const selectedGrantJob = dashboard?.jobs.find((job) => job.id === selectedGrant?.proposalJobId) ?? null;
+  const selectedCatalogGrant =
+    catalogGrantDetail && catalogGrantDetail.grant.id === selectedCatalogGrantId
+      ? catalogGrantDetail
+      : selectedCatalogGrantSummary
+        ? { grant: selectedCatalogGrantSummary, schema: null }
+        : null;
   const ownerCanAcceptSelectedOffers = Boolean(
     session?.user && selectedJob && session.user.id === selectedJob.requesterId && isRequester,
   );
@@ -1590,6 +1670,67 @@ function PrivyDashboardApp() {
     );
   }
 
+  function renderOrganizationTab() {
+    return (
+      <OrganizationWorkspaceView
+        organization={organization}
+        busyAction={busyAction}
+        onSaveProfile={(input) => void saveOrganizationProfile(input)}
+        onAddPersonnel={(input) => void addOrganizationPersonnel(input)}
+        onAcceptInvite={(inviteId) => void acceptOrganizationInvite(inviteId)}
+      />
+    );
+  }
+
+  function renderCatalogTab() {
+    return (
+      <CatalogWorkspaceView
+        grants={catalog}
+        selectedGrantId={selectedCatalogGrantId}
+        selectedGrantDetail={selectedCatalogGrant}
+        busyAction={busyAction}
+        onSelectGrant={setSelectedCatalogGrantId}
+        onToggleBookmark={(grantId, bookmarked) => void toggleCatalogBookmark(grantId, bookmarked)}
+        onSaveSchema={(grantId, input) => void saveCatalogSchema(grantId, input)}
+        onCreateWorkspaceFromGrant={(grantId, documentType) =>
+          void createApplicationWorkspace({ catalogGrantId: grantId, documentType })
+        }
+      />
+    );
+  }
+
+  function renderApplicationsTab() {
+    return (
+      <ApplicationWorkspaceView
+        templates={applicationTemplates}
+        workspaces={applicationWorkspaces}
+        providerConnections={providerConnections}
+        busyAction={busyAction}
+        onCreateTemplate={(input) => void createApplicationTemplate(input)}
+        onCreateWorkspace={(input) => void createApplicationWorkspace(input)}
+        onUpdateSection={(workspaceId, sectionId, content) =>
+          void updateApplicationWorkspaceSection(workspaceId, sectionId, content)
+        }
+        onGenerateSection={(workspaceId, sectionId, providerConnectionId) =>
+          void generateApplicationWorkspaceSection(workspaceId, sectionId, providerConnectionId)
+        }
+        onFinalizeWorkspace={(workspaceId) => void finalizeApplicationWorkspace(workspaceId)}
+      />
+    );
+  }
+
+  function renderProvidersTab() {
+    return (
+      <ProviderWorkspaceView
+        organization={organization}
+        connections={providerConnections}
+        executions={executions}
+        busyAction={busyAction}
+        onCreateConnection={(input) => void createProviderConnection(input)}
+      />
+    );
+  }
+
   function renderWorkspace() {
     if (!session?.user || !workspace || !dashboard) {
       return null;
@@ -1612,25 +1753,57 @@ function PrivyDashboardApp() {
                 active={activeTab === "request-marketplace"}
                 label="Request marketplace"
                 description="Create requests, review offers, and handle funding challenges."
+                tabId="request-marketplace"
                 onClick={() => setActiveTab("request-marketplace")}
               />
               <SidebarButton
                 active={activeTab === "research-dashboard"}
                 label="Research dashboard"
                 description="Design reusable scenarios and create new research requests."
+                tabId="research-dashboard"
                 onClick={() => setActiveTab("research-dashboard")}
               />
               <SidebarButton
                 active={activeTab === "my-requests"}
                 label="My requests"
                 description="Run or rerun research and monitor the resulting grant pipeline."
+                tabId="my-requests"
                 onClick={() => setActiveTab("my-requests")}
               />
               <SidebarButton
                 active={activeTab === "my-grants"}
                 label="My grants"
                 description="Manage the active queue and turn grants into proposal jobs."
+                tabId="my-grants"
                 onClick={() => setActiveTab("my-grants")}
+              />
+              <SidebarButton
+                active={activeTab === "organization"}
+                label="Organization"
+                description="Maintain the organization profile, personnel records, and invitation state."
+                tabId="organization"
+                onClick={() => setActiveTab("organization")}
+              />
+              <SidebarButton
+                active={activeTab === "catalog"}
+                label="Catalog"
+                description="Review promoted grants, bookmark them, and save application schemas."
+                tabId="catalog"
+                onClick={() => setActiveTab("catalog")}
+              />
+              <SidebarButton
+                active={activeTab === "applications"}
+                label="Applications"
+                description="Create reusable templates, edit proposal drafts, and finalize workspaces."
+                tabId="applications"
+                onClick={() => setActiveTab("applications")}
+              />
+              <SidebarButton
+                active={activeTab === "providers"}
+                label="Providers"
+                description="Register provider connections and inspect execution history."
+                tabId="providers"
+                onClick={() => setActiveTab("providers")}
               />
             </div>
           </section>
@@ -1701,6 +1874,10 @@ function PrivyDashboardApp() {
           {activeTab === "research-dashboard" ? renderResearchDashboardTab() : null}
           {activeTab === "my-requests" ? renderMyRequestsTab() : null}
           {activeTab === "my-grants" ? renderMyGrantsTab() : null}
+          {activeTab === "organization" ? renderOrganizationTab() : null}
+          {activeTab === "catalog" ? renderCatalogTab() : null}
+          {activeTab === "applications" ? renderApplicationsTab() : null}
+          {activeTab === "providers" ? renderProvidersTab() : null}
           {fundingChallenge ? (
             <SectionCard
               title="Latest funding challenge"

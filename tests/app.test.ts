@@ -1199,6 +1199,11 @@ test("requester can create a schema-backed application workspace, generate secti
     }),
   });
   const schemaPayload = await schemaResponse.json();
+  const catalogDetailResponse = await app.request(`/api/catalog/grants/${promotePayload.grant.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
 
   const workspaceResponse = await app.request("/api/application-workspaces", {
     method: "POST",
@@ -1212,7 +1217,21 @@ test("requester can create a schema-backed application workspace, generate secti
     }),
   });
   const workspacePayload = await workspaceResponse.json();
+  const editableSection = workspacePayload.workspace.sections[0];
   const generatedSection = workspacePayload.workspace.sections[1];
+  const updateResponse = await app.request(
+    `/api/application-workspaces/${workspacePayload.workspace.id}/sections/${editableSection.id}`,
+    {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer browser_requester",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        content: "Updated organization narrative tailored to the automation grant opportunity.",
+      }),
+    },
+  );
 
   const generateResponse = await app.request(
     `/api/application-workspaces/${workspacePayload.workspace.id}/sections/${generatedSection.id}/generate`,
@@ -1252,6 +1271,24 @@ test("requester can create a schema-backed application workspace, generate secti
       }),
     ],
   });
+  expect(catalogDetailResponse.status).toBe(200);
+  expect(await catalogDetailResponse.json()).toMatchObject({
+    grant: expect.objectContaining({
+      id: promotePayload.grant.id,
+      title: "State Automation Grant",
+    }),
+    schema: expect.objectContaining({
+      name: "Automation grant application",
+      sections: [
+        expect.objectContaining({
+          key: "organization_profile",
+        }),
+        expect.objectContaining({
+          key: "project_summary",
+        }),
+      ],
+    }),
+  });
   expect(workspaceResponse.status).toBe(201);
   expect(workspacePayload.workspace).toMatchObject({
     catalogGrantId: promotePayload.grant.id,
@@ -1267,6 +1304,13 @@ test("requester can create a schema-backed application workspace, generate secti
         content: "",
       }),
     ],
+  });
+  expect(updateResponse.status).toBe(200);
+  expect(await updateResponse.json()).toMatchObject({
+    section: {
+      id: editableSection.id,
+      content: "Updated organization narrative tailored to the automation grant opportunity.",
+    },
   });
   expect(generateResponse.status).toBe(200);
   expect(await generateResponse.json()).toMatchObject({
@@ -1290,7 +1334,7 @@ test("requester can create a schema-backed application workspace, generate secti
       sections: [
         expect.objectContaining({
           key: "organization_profile",
-          content: expect.stringContaining("Oak Harbor Community Labs"),
+          content: "Updated organization narrative tailored to the automation grant opportunity.",
         }),
         expect.objectContaining({
           id: generatedSection.id,
@@ -1414,6 +1458,11 @@ test("custom templates, scoped service requests, and provider-backed generation 
       authorization: "Bearer browser_requester",
     },
   });
+  const workspaceAggregateResponse = await app.request("/api/workspace", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
 
   const createJobResponse = await app.request("/api/jobs", {
     method: "POST",
@@ -1489,6 +1538,33 @@ test("custom templates, scoped service requests, and provider-backed generation 
       expect.objectContaining({
         providerConnectionId: providerPayload.connection.id,
         targetType: "workspace_section",
+        targetId: targetedSection.id,
+      }),
+    ],
+  });
+  expect(workspaceAggregateResponse.status).toBe(200);
+  expect(await workspaceAggregateResponse.json()).toMatchObject({
+    applicationTemplates: [
+      expect.objectContaining({
+        id: templatePayload.template.id,
+        name: "LOI starter",
+      }),
+    ],
+    applicationWorkspaces: [
+      expect.objectContaining({
+        id: workspacePayload.workspace.id,
+        templateId: templatePayload.template.id,
+      }),
+    ],
+    providerConnections: [
+      expect.objectContaining({
+        id: providerPayload.connection.id,
+        provider: "openai",
+      }),
+    ],
+    executions: [
+      expect.objectContaining({
+        providerConnectionId: providerPayload.connection.id,
         targetId: targetedSection.id,
       }),
     ],

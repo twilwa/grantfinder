@@ -230,6 +230,10 @@ export interface WorkspaceData {
   grants: WorkspaceGrant[];
   reports: Array<ReturnType<ApplicationServices["toPublicGrantReport"]>>;
   catalog: Array<ReturnType<ApplicationServices["toPublicGrantCatalogEntry"]>>;
+  applicationTemplates: Array<ReturnType<ApplicationServices["toPublicApplicationTemplate"]>>;
+  applicationWorkspaces: Array<ReturnType<ApplicationServices["toPublicApplicationWorkspace"]>>;
+  providerConnections: Array<ReturnType<ApplicationServices["toPublicProviderConnection"]>>;
+  executions: Array<ReturnType<ApplicationServices["toPublicAgentExecutionRecord"]>>;
 }
 
 export type FundingResearchRunner = (
@@ -1028,6 +1032,28 @@ export class ApplicationServices {
     const catalog = state.grantCatalogEntries
       .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id)))
       .sort(byCreatedAt);
+    const applicationTemplates = state.applicationTemplates
+      .filter((template) => template.ownerUserId === user.id)
+      .map((template) => this.toPublicApplicationTemplate(template))
+      .sort(byCreatedAt);
+    const applicationWorkspaces = state.applicationWorkspaces
+      .filter((workspace) => workspace.requesterId === user.id)
+      .map((workspace) => this.toPublicApplicationWorkspace(workspace))
+      .sort(byCreatedAt);
+    const providerConnections = state.agentProviderConnections
+      .filter((connection) =>
+        connection.scope === "user"
+          ? connection.ownerUserId === user.id
+          : organization
+            ? connection.organizationId === organization.id
+            : false,
+      )
+      .map((connection) => this.toPublicProviderConnection(connection))
+      .sort(byCreatedAt);
+    const executions = state.agentExecutionRecords
+      .filter((record) => record.actorUserId === user.id)
+      .map((record) => this.toPublicAgentExecutionRecord(record))
+      .sort(byCreatedAt);
 
     return {
       user: this.toPublicUser(user),
@@ -1043,6 +1069,10 @@ export class ApplicationServices {
       grants,
       reports,
       catalog,
+      applicationTemplates,
+      applicationWorkspaces,
+      providerConnections,
+      executions,
     };
   }
 
@@ -1146,11 +1176,13 @@ export class ApplicationServices {
 
   async getCatalogGrant(user: PlatformUser, grantId: string) {
     const grant = await this.requireCatalogGrant(grantId);
+    const schema = await this.store.findGrantApplicationSchemaByCatalogGrantId(grant.id);
     return {
       grant: this.toPublicGrantCatalogEntry(
         grant,
         await this.isCatalogGrantBookmarked(user.id, grant.id),
       ),
+      schema: schema ? this.toPublicGrantApplicationSchema(schema) : null,
     };
   }
 
@@ -1262,6 +1294,36 @@ export class ApplicationServices {
     const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
     return {
       workspace: this.toPublicApplicationWorkspace(workspace),
+    };
+  }
+
+  async updateApplicationWorkspaceSection(
+    user: PlatformUser,
+    workspaceId: string,
+    sectionId: string,
+    input: { content: string },
+  ) {
+    const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
+    const sectionIndex = workspace.sections.findIndex((section) => section.id === sectionId);
+    if (sectionIndex === -1) {
+      throw new AppError(404, "workspace_section_not_found", "The requested workspace section does not exist.");
+    }
+
+    const updatedAt = now();
+    const savedWorkspace = await this.store.saveApplicationWorkspace({
+      ...workspace,
+      sections: workspace.sections.map((section, index) =>
+        index === sectionIndex ? { ...section, content: input.content, updatedAt } : section,
+      ),
+      updatedAt,
+    });
+    const savedSection = savedWorkspace.sections.find((section) => section.id === sectionId);
+    if (!savedSection) {
+      throw new AppError(500, "workspace_section_missing", "The saved workspace section could not be loaded.");
+    }
+
+    return {
+      section: this.toPublicApplicationWorkspace(savedWorkspace).sections.find((section) => section.id === sectionId),
     };
   }
 

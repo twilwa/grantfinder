@@ -873,6 +873,14 @@ export function createApp(options: AppOptions = {}) {
     return c.json(await services.getApplicationWorkspace(user, c.req.param("id")));
   });
 
+  app.patch("/api/application-workspaces/:id/sections/:sectionId", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{ content: string }>(c.req.raw);
+    return c.json(
+      await services.updateApplicationWorkspaceSection(user, c.req.param("id"), c.req.param("sectionId"), payload),
+    );
+  });
+
   app.post("/api/application-workspaces/:id/finalize", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     return c.json(await services.finalizeApplicationWorkspace(user, c.req.param("id")));
@@ -1318,6 +1326,18 @@ export function createApp(options: AppOptions = {}) {
         case "application.workspaces.get": {
           const user = await services.authenticate(authToken);
           result = await services.getApplicationWorkspace(user, String(params.workspaceId ?? ""));
+          break;
+        }
+        case "application.workspaces.updateSection": {
+          const user = await services.authenticate(authToken);
+          result = await services.updateApplicationWorkspaceSection(
+            user,
+            String(params.workspaceId ?? ""),
+            String(params.sectionId ?? ""),
+            {
+              content: String(params.content ?? ""),
+            },
+          );
           break;
         }
         case "application.workspaces.finalize": {
