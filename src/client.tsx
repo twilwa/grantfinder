@@ -12,6 +12,7 @@ import {
   ApplicationWorkspaceView,
   CatalogWorkspaceView,
   OrganizationWorkspaceView,
+  ProposalWorkspaceView,
   ProviderWorkspaceView,
   type AgentExecutionSummary,
   type ApplicationDocumentType,
@@ -22,6 +23,8 @@ import {
   type OrganizationProfileInput,
   type OrganizationPersonnelInput,
   type OrganizationSummary,
+  type ProposalWorkspaceSummary,
+  type ProposalWorkspaceUpdateInput,
   type ProviderArtifactType,
   type ProviderAuthType,
   type ProviderConnectionScope,
@@ -59,6 +62,7 @@ type WorkspaceTab =
   | "research-dashboard"
   | "my-requests"
   | "my-grants"
+  | "proposal-workspaces"
   | "organization"
   | "catalog"
   | "applications"
@@ -216,6 +220,7 @@ interface WorkspaceGrant {
   citations: string[];
   nextActions: string[];
   queueState: "active" | "inactive";
+  proposalWorkspaceId: string | null;
   proposalJobId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -230,6 +235,7 @@ interface WorkspacePayload {
   scenarios: ResearchScenarioSummary[];
   requests: WorkspaceRequest[];
   grants: WorkspaceGrant[];
+  proposalWorkspaces: ProposalWorkspaceSummary[];
   reports: Array<{
     id: string;
     requestId: string;
@@ -298,6 +304,7 @@ function PrivyDashboardApp() {
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [selectedGrantId, setSelectedGrantId] = useState<string | null>(null);
   const [selectedCatalogGrantId, setSelectedCatalogGrantId] = useState<string | null>(null);
+  const [selectedProposalWorkspaceId, setSelectedProposalWorkspaceId] = useState<string | null>(null);
   const [catalogGrantDetail, setCatalogGrantDetail] = useState<CatalogGrantDetailPayload | null>(null);
 
   const linkedAccounts = (user?.linkedAccounts as unknown[] | undefined) ?? [];
@@ -487,6 +494,21 @@ function PrivyDashboardApp() {
       setSelectedGrantId(grants[0].id);
     }
   }, [workspace?.grants, selectedGrantId]);
+
+  useEffect(() => {
+    const proposalWorkspaces = workspace?.proposalWorkspaces ?? [];
+    if (proposalWorkspaces.length === 0) {
+      setSelectedProposalWorkspaceId(null);
+      return;
+    }
+
+    if (
+      !selectedProposalWorkspaceId ||
+      !proposalWorkspaces.some((proposalWorkspace) => proposalWorkspace.id === selectedProposalWorkspaceId)
+    ) {
+      setSelectedProposalWorkspaceId(proposalWorkspaces[0].id);
+    }
+  }, [workspace?.proposalWorkspaces, selectedProposalWorkspaceId]);
 
   useEffect(() => {
     const catalog = workspace?.catalog ?? [];
@@ -683,6 +705,44 @@ function PrivyDashboardApp() {
       setMessage(`Workspace "${payload.workspace.title}" created.`);
       await refreshWorkspace();
       setActiveTab("applications");
+    });
+  }
+
+  async function createProposalWorkspaceFromGrant(grantId: string) {
+    await runAction(`proposal-create-${grantId}`, async () => {
+      const response = await authedFetch(`/api/grants/${grantId}/proposal-workspace`, {
+        method: "POST",
+      });
+      const payload = await parseJsonResponse<{ workspace: ProposalWorkspaceSummary }>(response);
+      setSelectedProposalWorkspaceId(payload.workspace.id);
+      setMessage("Proposal workspace created.");
+      await refreshWorkspace();
+      setActiveTab("proposal-workspaces");
+    });
+  }
+
+  async function updateProposalWorkspace(workspaceId: string, input: ProposalWorkspaceUpdateInput) {
+    const actionKey =
+      input.feasibilitySnapshot !== undefined
+        ? `proposal-feasibility-${workspaceId}`
+        : input.contacts !== undefined
+          ? `proposal-contact-${workspaceId}`
+          : input.outreachEvents !== undefined
+            ? `proposal-outreach-${workspaceId}`
+            : input.outcome !== undefined
+              ? `proposal-outcome-${workspaceId}`
+              : `proposal-plan-${workspaceId}`;
+
+    await runAction(actionKey, async () => {
+      const response = await authedFetch(`/api/proposal-workspaces/${workspaceId}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      });
+      const payload = await parseJsonResponse<{ workspace: ProposalWorkspaceSummary }>(response);
+      setSelectedProposalWorkspaceId(payload.workspace.id);
+      setMessage("Proposal workspace saved.");
+      await refreshWorkspace();
+      setActiveTab("proposal-workspaces");
     });
   }
 
@@ -913,12 +973,39 @@ function PrivyDashboardApp() {
 
   async function createProposalJob(grantId: string) {
     await runAction(`proposal-${grantId}`, async () => {
-      await parseJsonResponse(
-        await authedFetch(`/api/grants/${grantId}/proposal-job`, {
+      const endpoint = selectedGrant?.proposalWorkspaceId
+        ? `/api/proposal-workspaces/${selectedGrant.proposalWorkspaceId}/proposal-job`
+        : `/api/grants/${grantId}/proposal-job`;
+      const payload = await parseJsonResponse<{ job: { id: string } }>(
+        await authedFetch(endpoint, {
           method: "POST",
         }),
       );
       setMessage("Proposal-writing job created in the marketplace.");
+      if (selectedGrant?.proposalWorkspaceId) {
+        setSelectedProposalWorkspaceId(selectedGrant.proposalWorkspaceId);
+      }
+      if (payload.job?.id) {
+        setSelectedJobId(payload.job.id);
+      }
+      setActiveTab("request-marketplace");
+      await refreshPublicDashboard();
+      await refreshWorkspace();
+    });
+  }
+
+  async function createProposalJobFromWorkspace(workspaceId: string) {
+    await runAction(`proposal-job-${workspaceId}`, async () => {
+      const payload = await parseJsonResponse<{ job: { id: string } }>(
+        await authedFetch(`/api/proposal-workspaces/${workspaceId}/proposal-job`, {
+          method: "POST",
+        }),
+      );
+      setMessage("Proposal-writing job attached in the marketplace.");
+      setSelectedProposalWorkspaceId(workspaceId);
+      if (payload.job?.id) {
+        setSelectedJobId(payload.job.id);
+      }
       setActiveTab("request-marketplace");
       await refreshPublicDashboard();
       await refreshWorkspace();
@@ -932,6 +1019,7 @@ function PrivyDashboardApp() {
   const scenarios = workspace?.scenarios ?? [];
   const requests = workspace?.requests ?? [];
   const grants = workspace?.grants ?? [];
+  const proposalWorkspaces = workspace?.proposalWorkspaces ?? [];
   const catalog = workspace?.catalog ?? [];
   const applicationTemplates = workspace?.applicationTemplates ?? [];
   const applicationWorkspaces = workspace?.applicationWorkspaces ?? [];
@@ -1640,6 +1728,22 @@ function PrivyDashboardApp() {
                 >
                   {selectedGrant.proposalJobId ? "Refresh proposal job" : "Create proposal job"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedGrant.proposalWorkspaceId) {
+                      setSelectedProposalWorkspaceId(selectedGrant.proposalWorkspaceId);
+                      setActiveTab("proposal-workspaces");
+                      return;
+                    }
+
+                    void createProposalWorkspaceFromGrant(selectedGrant.id);
+                  }}
+                  style={buttonStyle(busyAction === `proposal-create-${selectedGrant.id}` || busyAction === `proposal-${selectedGrant.id}`)}
+                  disabled={!isRequester || busyAction === `proposal-create-${selectedGrant.id}`}
+                >
+                  {selectedGrant.proposalWorkspaceId ? "Open proposal workspace" : "Create proposal workspace"}
+                </button>
               </div>
               {selectedGrant.proposalJobId ? (
                 <div style={subtleCardStyle}>
@@ -1682,6 +1786,21 @@ function PrivyDashboardApp() {
     );
   }
 
+  function renderProposalWorkspacesTab() {
+    return (
+        <ProposalWorkspaceView
+          grants={grants}
+          workspaces={proposalWorkspaces}
+          applicationWorkspaces={applicationWorkspaces}
+          selectedWorkspaceId={selectedProposalWorkspaceId}
+          busyAction={busyAction}
+          onCreateWorkspaceFromGrant={(grantId) => void createProposalWorkspaceFromGrant(grantId)}
+          onCreateProposalJob={(workspaceId) => void createProposalJobFromWorkspace(workspaceId)}
+          onUpdateWorkspace={(workspaceId, input) => void updateProposalWorkspace(workspaceId, input)}
+        />
+      );
+    }
+
   function renderCatalogTab() {
     return (
       <CatalogWorkspaceView
@@ -1692,9 +1811,7 @@ function PrivyDashboardApp() {
         onSelectGrant={setSelectedCatalogGrantId}
         onToggleBookmark={(grantId, bookmarked) => void toggleCatalogBookmark(grantId, bookmarked)}
         onSaveSchema={(grantId, input) => void saveCatalogSchema(grantId, input)}
-        onCreateWorkspaceFromGrant={(grantId, documentType) =>
-          void createApplicationWorkspace({ catalogGrantId: grantId, documentType })
-        }
+        onCreateWorkspaceFromGrant={(grantId) => void createProposalWorkspaceFromGrant(grantId)}
       />
     );
   }
@@ -1773,9 +1890,16 @@ function PrivyDashboardApp() {
               <SidebarButton
                 active={activeTab === "my-grants"}
                 label="My grants"
-                description="Manage the active queue and turn grants into proposal jobs."
+                description="Manage the active queue and turn grants into proposal workspaces."
                 tabId="my-grants"
                 onClick={() => setActiveTab("my-grants")}
+              />
+              <SidebarButton
+                active={activeTab === "proposal-workspaces"}
+                label="Proposal workspaces"
+                description="Track stage, feasibility, contacts, outreach, and outcomes."
+                tabId="proposal-workspaces"
+                onClick={() => setActiveTab("proposal-workspaces")}
               />
               <SidebarButton
                 active={activeTab === "organization"}
@@ -1874,6 +1998,7 @@ function PrivyDashboardApp() {
           {activeTab === "research-dashboard" ? renderResearchDashboardTab() : null}
           {activeTab === "my-requests" ? renderMyRequestsTab() : null}
           {activeTab === "my-grants" ? renderMyGrantsTab() : null}
+          {activeTab === "proposal-workspaces" ? renderProposalWorkspacesTab() : null}
           {activeTab === "organization" ? renderOrganizationTab() : null}
           {activeTab === "catalog" ? renderCatalogTab() : null}
           {activeTab === "applications" ? renderApplicationsTab() : null}

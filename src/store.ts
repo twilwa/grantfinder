@@ -11,6 +11,12 @@ import type {
   PlatformAgentProviderConnection,
   PlatformApplicationTemplate,
   PlatformApplicationWorkspace,
+  PlatformProposalContact,
+  PlatformProposalFeasibilitySnapshot,
+  PlatformProposalOpportunity,
+  PlatformProposalOutcome,
+  PlatformProposalOutreachEvent,
+  PlatformProposalWorkspace,
   PlatformGrantBookmark,
   PlatformGrantApplicationSchema,
   PlatformGrantCatalogEntry,
@@ -264,6 +270,8 @@ function toJob(row: Record<string, unknown>): PlatformJob {
           ? "workspace_section"
           : row.target_type === "grant_catalog_entry"
             ? "grant_catalog_entry"
+            : row.target_type === "proposal_workspace"
+              ? "proposal_workspace"
             : null,
     targetId: row.target_id ? String(row.target_id) : null,
     specialistRole:
@@ -338,6 +346,8 @@ function toEngagement(
           ? "workspace_section"
           : row.target_type === "grant_catalog_entry"
             ? "grant_catalog_entry"
+            : row.target_type === "proposal_workspace"
+              ? "proposal_workspace"
             : null,
     targetId: row.target_id ? String(row.target_id) : null,
     specialistRole:
@@ -437,6 +447,7 @@ function toTrackedGrant(row: Record<string, unknown>): PlatformTrackedGrant {
     citations: parseJsonText<string[]>(row.citations_json, []),
     nextActions: parseJsonText<string[]>(row.next_actions_json, []),
     queueState: row.queue_state === "inactive" ? "inactive" : "active",
+    proposalWorkspaceId: row.proposal_workspace_id ? String(row.proposal_workspace_id) : null,
     proposalJobId: row.proposal_job_id ? String(row.proposal_job_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -558,6 +569,151 @@ function toApplicationWorkspace(row: Record<string, unknown>): PlatformApplicati
   };
 }
 
+function toProposalOpportunity(value: unknown): PlatformProposalOpportunity {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    sourceType: record.sourceType === "manual" ? "manual" : "tracked_grant",
+    title: typeof record.title === "string" ? record.title : "",
+    sponsor: typeof record.sponsor === "string" ? record.sponsor : "",
+    fundingType: typeof record.fundingType === "string" ? record.fundingType : "",
+    amountSummary: typeof record.amountSummary === "string" ? record.amountSummary : null,
+    deadlineSummary: typeof record.deadlineSummary === "string" ? record.deadlineSummary : null,
+    geography: typeof record.geography === "string" ? record.geography : null,
+    sourceUrl: typeof record.sourceUrl === "string" ? record.sourceUrl : null,
+    notes: typeof record.notes === "string" ? record.notes : null,
+  };
+}
+
+function toProposalFeasibilitySnapshot(value: unknown): PlatformProposalFeasibilitySnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const verdict = typeof record.verdict === "string" ? record.verdict : "";
+  const recommendedNextStep =
+    typeof record.recommendedNextStep === "string" ? record.recommendedNextStep : "";
+  const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
+  if (!verdict || !recommendedNextStep || !updatedAt) {
+    return null;
+  }
+
+  return {
+    verdict,
+    confidence: record.confidence === "low" ? "low" : record.confidence === "medium" ? "medium" : "high",
+    blockers: Array.isArray(record.blockers) ? record.blockers.map((entry) => String(entry)) : [],
+    assumptions: Array.isArray(record.assumptions) ? record.assumptions.map((entry) => String(entry)) : [],
+    requiredDocuments: Array.isArray(record.requiredDocuments)
+      ? record.requiredDocuments.map((entry) => String(entry))
+      : [],
+    recommendedNextStep,
+    updatedAt,
+  };
+}
+
+function toProposalContact(value: unknown): PlatformProposalContact {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    id: typeof record.id === "string" ? record.id : makeId("contact"),
+    name: typeof record.name === "string" ? record.name : "",
+    roleTitle: typeof record.roleTitle === "string" ? record.roleTitle : null,
+    email: typeof record.email === "string" ? record.email : null,
+    phone: typeof record.phone === "string" ? record.phone : null,
+    organization: typeof record.organization === "string" ? record.organization : null,
+    notes: typeof record.notes === "string" ? record.notes : null,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : now(),
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now(),
+  };
+}
+
+function toProposalOutreachEvent(value: unknown): PlatformProposalOutreachEvent {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    id: typeof record.id === "string" ? record.id : makeId("outreach"),
+    kind:
+      record.kind === "call"
+        ? "call"
+        : record.kind === "meeting"
+          ? "meeting"
+          : record.kind === "note"
+            ? "note"
+            : record.kind === "other"
+              ? "other"
+              : "email",
+    direction: record.direction === "inbound" ? "inbound" : "outbound",
+    subject: typeof record.subject === "string" ? record.subject : null,
+    summary: typeof record.summary === "string" ? record.summary : "",
+    occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : now(),
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : now(),
+  };
+}
+
+function toProposalOutcome(value: unknown): PlatformProposalOutcome | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? record.summary : "";
+  const recordedAt = typeof record.recordedAt === "string" ? record.recordedAt : "";
+  if (!summary || !recordedAt) {
+    return null;
+  }
+
+  return {
+    status:
+      record.status === "awarded"
+        ? "awarded"
+        : record.status === "declined"
+          ? "declined"
+          : record.status === "no_bid"
+            ? "no_bid"
+            : "submitted",
+    summary,
+    recordedAt,
+  };
+}
+
+function toProposalWorkspace(row: Record<string, unknown>): PlatformProposalWorkspace {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    organizationId: row.organization_id ? String(row.organization_id) : null,
+    trackedGrantId: row.tracked_grant_id ? String(row.tracked_grant_id) : null,
+    opportunity: toProposalOpportunity(parseJsonText(row.opportunity_json, null)),
+    stage:
+      row.stage === "drafting"
+        ? "drafting"
+        : row.stage === "outreach"
+          ? "outreach"
+          : row.stage === "submitted"
+            ? "submitted"
+            : row.stage === "awarded"
+              ? "awarded"
+              : row.stage === "declined"
+                ? "declined"
+                : row.stage === "no_bid"
+                  ? "no_bid"
+                  : "qualifying",
+    summary: String(row.summary ?? ""),
+    nextSteps: parseJsonText<string[]>(row.next_steps_json, []),
+    openQuestions: parseJsonText<string[]>(row.open_questions_json, []),
+    primaryApplicationWorkspaceId: row.primary_application_workspace_id
+      ? String(row.primary_application_workspace_id)
+      : null,
+    feasibilitySnapshot: toProposalFeasibilitySnapshot(parseJsonText(row.feasibility_snapshot_json, null)),
+    contacts: parseJsonText<unknown[]>(row.contacts_json, []).map((entry) => toProposalContact(entry)),
+    outreachEvents: parseJsonText<unknown[]>(row.outreach_events_json, []).map((entry) =>
+      toProposalOutreachEvent(entry),
+    ),
+    outcome: toProposalOutcome(parseJsonText(row.outcome_json, null)),
+    proposalJobId: row.proposal_job_id ? String(row.proposal_job_id) : null,
+    engagementId: row.engagement_id ? String(row.engagement_id) : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 function toAgentProviderConnection(row: Record<string, unknown>): PlatformAgentProviderConnection {
   return {
     id: String(row.id),
@@ -583,6 +739,8 @@ function toAgentExecutionRecord(row: Record<string, unknown>): PlatformAgentExec
         ? "grant_catalog_entry"
         : row.target_type === "application_workspace"
           ? "application_workspace"
+          : row.target_type === "proposal_workspace"
+            ? "proposal_workspace"
           : "workspace_section",
     targetId: String(row.target_id),
     action: String(row.action),
@@ -971,7 +1129,7 @@ class MemoryStore {
     return this.state.applicationTemplates.find((template) => template.id === templateId) ?? null;
   }
 
-  async createApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
+      async createApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
     this.state.applicationWorkspaces.push(structuredClone(workspace));
     return structuredClone(workspace);
   }
@@ -988,6 +1146,30 @@ class MemoryStore {
     }
 
     this.state.applicationWorkspaces[index] = structuredClone(workspace);
+    return structuredClone(workspace);
+  }
+
+  async createProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    this.state.proposalWorkspaces.push(structuredClone(workspace));
+    return structuredClone(workspace);
+  }
+
+  async findProposalWorkspaceById(workspaceId: string): Promise<PlatformProposalWorkspace | null> {
+    return this.state.proposalWorkspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+  }
+
+  async findProposalWorkspaceByTrackedGrantId(grantId: string): Promise<PlatformProposalWorkspace | null> {
+    return this.state.proposalWorkspaces.find((workspace) => workspace.trackedGrantId === grantId) ?? null;
+  }
+
+  async saveProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    const index = this.state.proposalWorkspaces.findIndex((candidate) => candidate.id === workspace.id);
+    if (index === -1) {
+      this.state.proposalWorkspaces.push(structuredClone(workspace));
+      return structuredClone(workspace);
+    }
+
+    this.state.proposalWorkspaces[index] = structuredClone(workspace);
     return structuredClone(workspace);
   }
 
@@ -1034,6 +1216,7 @@ class PostgresStore {
       grantApplicationSchemas,
       applicationTemplates,
       applicationWorkspaces,
+      proposalWorkspaces,
       agentProviderConnections,
       agentExecutionRecords,
     ] =
@@ -1056,6 +1239,7 @@ class PostgresStore {
         this.database.query("select * from grant_application_schemas order by created_at desc"),
         this.database.query("select * from application_templates order by created_at desc"),
         this.database.query("select * from application_workspaces order by created_at desc"),
+        this.database.query("select * from proposal_workspaces order by created_at desc"),
         this.database.query("select * from agent_provider_connections order by created_at desc"),
         this.database.query("select * from agent_execution_records order by created_at desc"),
       ]);
@@ -1087,6 +1271,7 @@ class PostgresStore {
       applicationWorkspaces: (applicationWorkspaces.rows as Record<string, unknown>[]).map(
         toApplicationWorkspace,
       ),
+      proposalWorkspaces: (proposalWorkspaces.rows as Record<string, unknown>[]).map(toProposalWorkspace),
       agentProviderConnections: (agentProviderConnections.rows as Record<string, unknown>[]).map(
         toAgentProviderConnection,
       ),
@@ -1705,12 +1890,13 @@ class PostgresStore {
             citations_json,
             next_actions_json,
             queue_state,
+            proposal_workspace_id,
             proposal_job_id,
             created_at,
             updated_at
           ) values (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
           )`,
           [
             grant.id,
@@ -1729,6 +1915,7 @@ class PostgresStore {
             JSON.stringify(grant.citations),
             JSON.stringify(grant.nextActions),
             grant.queueState,
+            grant.proposalWorkspaceId,
             grant.proposalJobId,
             grant.createdAt,
             grant.updatedAt,
@@ -1760,11 +1947,12 @@ class PostgresStore {
     const result = await this.database.query(
       `update tracked_grants
        set queue_state = $2,
-           proposal_job_id = $3,
-           updated_at = $4
+           proposal_workspace_id = $3,
+           proposal_job_id = $4,
+           updated_at = $5
        where id = $1
        returning *`,
-      [grant.id, grant.queueState, grant.proposalJobId, grant.updatedAt],
+      [grant.id, grant.queueState, grant.proposalWorkspaceId, grant.proposalJobId, grant.updatedAt],
     );
     return toTrackedGrant(result.rows[0] as Record<string, unknown>);
   }
@@ -2093,6 +2281,118 @@ class PostgresStore {
     return toApplicationWorkspace(result.rows[0] as Record<string, unknown>);
   }
 
+  async createProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into proposal_workspaces (
+        id,
+        owner_user_id,
+        organization_id,
+        tracked_grant_id,
+        opportunity_json,
+        stage,
+        summary,
+        next_steps_json,
+        open_questions_json,
+        primary_application_workspace_id,
+        feasibility_snapshot_json,
+        contacts_json,
+        outreach_events_json,
+        outcome_json,
+        proposal_job_id,
+        engagement_id,
+        created_at,
+        updated_at
+      ) values (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14, $15, $16, $17, $18
+      )
+      returning *`,
+      [
+        workspace.id,
+        workspace.ownerUserId,
+        workspace.organizationId,
+        workspace.trackedGrantId,
+        JSON.stringify(workspace.opportunity),
+        workspace.stage,
+        workspace.summary,
+        JSON.stringify(workspace.nextSteps),
+        JSON.stringify(workspace.openQuestions),
+        workspace.primaryApplicationWorkspaceId,
+        workspace.feasibilitySnapshot ? JSON.stringify(workspace.feasibilitySnapshot) : null,
+        JSON.stringify(workspace.contacts),
+        JSON.stringify(workspace.outreachEvents),
+        workspace.outcome ? JSON.stringify(workspace.outcome) : null,
+        workspace.proposalJobId,
+        workspace.engagementId,
+        workspace.createdAt,
+        workspace.updatedAt,
+      ],
+    );
+    return toProposalWorkspace(result.rows[0] as Record<string, unknown>);
+  }
+
+  async findProposalWorkspaceById(workspaceId: string): Promise<PlatformProposalWorkspace | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from proposal_workspaces where id = $1 limit 1",
+      [workspaceId],
+    );
+    return result.rows[0] ? toProposalWorkspace(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async findProposalWorkspaceByTrackedGrantId(grantId: string): Promise<PlatformProposalWorkspace | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from proposal_workspaces where tracked_grant_id = $1 limit 1",
+      [grantId],
+    );
+    return result.rows[0] ? toProposalWorkspace(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async saveProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `update proposal_workspaces
+       set organization_id = $2,
+           tracked_grant_id = $3,
+           opportunity_json = $4,
+           stage = $5,
+           summary = $6,
+           next_steps_json = $7,
+           open_questions_json = $8,
+           primary_application_workspace_id = $9,
+           feasibility_snapshot_json = $10,
+           contacts_json = $11,
+           outreach_events_json = $12,
+           outcome_json = $13,
+           proposal_job_id = $14,
+           engagement_id = $15,
+           updated_at = $16
+       where id = $1
+       returning *`,
+      [
+        workspace.id,
+        workspace.organizationId,
+        workspace.trackedGrantId,
+        JSON.stringify(workspace.opportunity),
+        workspace.stage,
+        workspace.summary,
+        JSON.stringify(workspace.nextSteps),
+        JSON.stringify(workspace.openQuestions),
+        workspace.primaryApplicationWorkspaceId,
+        workspace.feasibilitySnapshot ? JSON.stringify(workspace.feasibilitySnapshot) : null,
+        JSON.stringify(workspace.contacts),
+        JSON.stringify(workspace.outreachEvents),
+        workspace.outcome ? JSON.stringify(workspace.outcome) : null,
+        workspace.proposalJobId,
+        workspace.engagementId,
+        workspace.updatedAt,
+      ],
+    );
+    return toProposalWorkspace(result.rows[0] as Record<string, unknown>);
+  }
+
   async createAgentProviderConnection(
     connection: PlatformAgentProviderConnection,
   ): Promise<PlatformAgentProviderConnection> {
@@ -2381,10 +2681,14 @@ class PostgresStore {
         citations_json text not null,
         next_actions_json text not null,
         queue_state text not null check (queue_state in ('active', 'inactive')),
+        proposal_workspace_id text,
         proposal_job_id text references jobs (id) on delete set null,
         created_at text not null,
         updated_at text not null
       )
+    `);
+    await this.database.query(`
+      alter table tracked_grants add column if not exists proposal_workspace_id text
     `);
     await this.database.query(`
       create table if not exists grant_reports (
@@ -2475,6 +2779,30 @@ class PostgresStore {
     await this.database.query(`
       alter table application_workspaces
       add column if not exists organization_prefill_json text
+    `);
+    await this.database.query(`
+      create table if not exists proposal_workspaces (
+        id text primary key,
+        owner_user_id text not null references users (id) on delete cascade,
+        organization_id text references organizations (id) on delete set null,
+        tracked_grant_id text unique,
+        opportunity_json text not null,
+        stage text not null check (
+          stage in ('qualifying', 'drafting', 'outreach', 'submitted', 'awarded', 'declined', 'no_bid')
+        ),
+        summary text not null default '',
+        next_steps_json text not null default '[]',
+        open_questions_json text not null default '[]',
+        primary_application_workspace_id text references application_workspaces (id) on delete set null,
+        feasibility_snapshot_json text,
+        contacts_json text not null default '[]',
+        outreach_events_json text not null default '[]',
+        outcome_json text,
+        proposal_job_id text references jobs (id) on delete set null,
+        engagement_id text references engagements (id) on delete set null,
+        created_at text not null,
+        updated_at text not null
+      )
     `);
     await this.database.query(`
       create table if not exists agent_provider_connections (
@@ -2711,6 +3039,22 @@ export class ApplicationStore {
 
   async saveApplicationWorkspace(workspace: PlatformApplicationWorkspace): Promise<PlatformApplicationWorkspace> {
     return this.driver.saveApplicationWorkspace(workspace);
+  }
+
+  async createProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    return this.driver.createProposalWorkspace(workspace);
+  }
+
+  async findProposalWorkspaceById(workspaceId: string): Promise<PlatformProposalWorkspace | null> {
+    return this.driver.findProposalWorkspaceById(workspaceId);
+  }
+
+  async findProposalWorkspaceByTrackedGrantId(grantId: string): Promise<PlatformProposalWorkspace | null> {
+    return this.driver.findProposalWorkspaceByTrackedGrantId(grantId);
+  }
+
+  async saveProposalWorkspace(workspace: PlatformProposalWorkspace): Promise<PlatformProposalWorkspace> {
+    return this.driver.saveProposalWorkspace(workspace);
   }
 
   async createAgentProviderConnection(

@@ -31,6 +31,11 @@ import type {
   PlatformOrganization,
   PlatformOrganizationPersonnel,
   PlatformOrganizationPrefill,
+  PlatformProposalContact,
+  PlatformProposalFeasibilitySnapshot,
+  PlatformProposalOutcome,
+  PlatformProposalOutreachEvent,
+  PlatformProposalWorkspace,
   PlatformResearchActivity,
   PlatformResearchRequest,
   PlatformResearchScenario,
@@ -39,6 +44,11 @@ import type {
   PlatformState,
   PlatformTrackedGrant,
   PlatformUser,
+  ProposalFeasibilityConfidence,
+  ProposalOutcomeStatus,
+  ProposalOutreachDirection,
+  ProposalOutreachKind,
+  ProposalWorkspaceStage,
   ResearchRunPhase,
   ServiceTargetType,
   SpecialistServiceRole,
@@ -168,8 +178,69 @@ interface CreateApplicationWorkspaceInput {
   documentType: ApplicationDocumentType;
 }
 
+interface CreateProposalWorkspaceInput {
+  trackedGrantId?: string | null;
+  manualOpportunity?: {
+    title: string;
+    sponsor: string;
+    fundingType: string;
+    amountSummary?: string | null;
+    deadlineSummary?: string | null;
+    geography?: string | null;
+    sourceUrl?: string | null;
+    notes?: string | null;
+  } | null;
+}
+
+interface UpdateProposalWorkspaceInput {
+  stage?: ProposalWorkspaceStage;
+  summary?: string;
+  nextSteps?: string[];
+  openQuestions?: string[];
+  feasibilitySnapshot?: {
+    verdict: string;
+    confidence: ProposalFeasibilityConfidence;
+    blockers?: string[];
+    assumptions?: string[];
+    requiredDocuments?: string[];
+    recommendedNextStep: string;
+  } | null;
+  contacts?: Array<{
+    name: string;
+    roleTitle?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    organization?: string | null;
+    notes?: string | null;
+  }>;
+  outreachEvents?: Array<{
+    kind: ProposalOutreachKind;
+    direction: ProposalOutreachDirection;
+    subject?: string | null;
+    summary: string;
+    occurredAt: string;
+  }>;
+  outcome?: {
+    status: ProposalOutcomeStatus;
+    summary: string;
+    recordedAt: string;
+  } | null;
+}
+
 interface GenerateWorkspaceSectionInput {
   providerConnectionId?: string | null;
+}
+
+type ProposalWorkspaceAction =
+  | "evaluate_feasibility"
+  | "discover_contacts"
+  | "draft_outreach"
+  | "plan_next_steps"
+  | "refresh_draft";
+
+interface RunProposalWorkspaceActionInput {
+  action: ProposalWorkspaceAction;
+  providerConnectionId: string;
 }
 
 interface CreateProviderConnectionInput {
@@ -232,6 +303,7 @@ export interface WorkspaceData {
   catalog: Array<ReturnType<ApplicationServices["toPublicGrantCatalogEntry"]>>;
   applicationTemplates: Array<ReturnType<ApplicationServices["toPublicApplicationTemplate"]>>;
   applicationWorkspaces: Array<ReturnType<ApplicationServices["toPublicApplicationWorkspace"]>>;
+  proposalWorkspaces: Array<ReturnType<ApplicationServices["toPublicProposalWorkspace"]>>;
   providerConnections: Array<ReturnType<ApplicationServices["toPublicProviderConnection"]>>;
   executions: Array<ReturnType<ApplicationServices["toPublicAgentExecutionRecord"]>>;
 }
@@ -502,6 +574,80 @@ export class ApplicationServices {
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
       finalizedAt: workspace.finalizedAt,
+    };
+  }
+
+  toPublicProposalWorkspace(workspace: PlatformProposalWorkspace, state: PlatformState) {
+    const primaryApplicationWorkspace = workspace.primaryApplicationWorkspaceId
+      ? state.applicationWorkspaces.find((candidate) => candidate.id === workspace.primaryApplicationWorkspaceId) ?? null
+      : null;
+    const proposalJob = workspace.proposalJobId
+      ? state.jobs.find((candidate) => candidate.id === workspace.proposalJobId) ?? null
+      : null;
+    const engagement = workspace.engagementId
+      ? state.engagements.find((candidate) => candidate.id === workspace.engagementId) ?? null
+      : proposalJob
+        ? state.engagements.find((candidate) => candidate.jobId === proposalJob.id) ?? null
+        : null;
+
+    return {
+      id: workspace.id,
+      ownerUserId: workspace.ownerUserId,
+      organizationId: workspace.organizationId,
+      trackedGrantId: workspace.trackedGrantId,
+      opportunity: {
+        ...workspace.opportunity,
+      },
+      stage: workspace.stage,
+      summary: workspace.summary,
+      nextSteps: [...workspace.nextSteps],
+      openQuestions: [...workspace.openQuestions],
+      feasibilitySnapshot: workspace.feasibilitySnapshot
+        ? {
+            ...workspace.feasibilitySnapshot,
+            blockers: [...workspace.feasibilitySnapshot.blockers],
+            assumptions: [...workspace.feasibilitySnapshot.assumptions],
+            requiredDocuments: [...workspace.feasibilitySnapshot.requiredDocuments],
+          }
+        : null,
+      contacts: workspace.contacts.map((contact) => ({
+        ...contact,
+      })),
+      outreachEvents: workspace.outreachEvents.map((event) => ({
+        ...event,
+      })),
+      outcome: workspace.outcome
+        ? {
+            ...workspace.outcome,
+          }
+        : null,
+      primaryApplicationWorkspace: primaryApplicationWorkspace
+        ? {
+            id: primaryApplicationWorkspace.id,
+            title: primaryApplicationWorkspace.title,
+            state: primaryApplicationWorkspace.state,
+            updatedAt: primaryApplicationWorkspace.updatedAt,
+            finalizedAt: primaryApplicationWorkspace.finalizedAt,
+          }
+        : null,
+      proposalJob: proposalJob
+        ? {
+            id: proposalJob.id,
+            status: proposalJob.status,
+            title: proposalJob.title,
+            createdAt: proposalJob.createdAt,
+          }
+        : null,
+      engagement: engagement
+        ? {
+            id: engagement.id,
+            status: engagement.status,
+            createdAt: engagement.createdAt,
+            fundedAt: engagement.fundedAt,
+          }
+        : null,
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
     };
   }
 
@@ -1040,6 +1186,7 @@ export class ApplicationServices {
       .filter((workspace) => workspace.requesterId === user.id)
       .map((workspace) => this.toPublicApplicationWorkspace(workspace))
       .sort(byCreatedAt);
+    const proposalWorkspaces = this.listAccessibleProposalWorkspaces(user, state);
     const providerConnections = state.agentProviderConnections
       .filter((connection) =>
         connection.scope === "user"
@@ -1071,6 +1218,7 @@ export class ApplicationServices {
       catalog,
       applicationTemplates,
       applicationWorkspaces,
+      proposalWorkspaces,
       providerConnections,
       executions,
     };
@@ -1290,6 +1438,42 @@ export class ApplicationServices {
     };
   }
 
+  private async createPrimaryApplicationWorkspaceForProposal(
+    user: PlatformUser,
+    input: {
+      title: string;
+      documentType: ApplicationDocumentType;
+      catalogGrant: PlatformGrantCatalogEntry | null;
+    },
+  ): Promise<PlatformApplicationWorkspace> {
+    const timestamp = now();
+    const organizationPrefill = this.buildOrganizationPrefill(await this.findOrganizationForUser(user));
+    const sectionDefinitions =
+      input.catalogGrant
+        ? (await this.store.findGrantApplicationSchemaByCatalogGrantId(input.catalogGrant.id))?.sections ??
+          this.buildDefaultWorkspaceSections(input.documentType)
+        : this.buildDefaultWorkspaceSections(input.documentType);
+    return this.store.createApplicationWorkspace({
+      id: makeId("workspace"),
+      requesterId: user.id,
+      catalogGrantId: input.catalogGrant?.id ?? null,
+      templateId: null,
+      organizationPrefill,
+      documentType: input.documentType,
+      title: input.title,
+      state: "draft",
+      sections: this.instantiateWorkspaceSections(
+        sectionDefinitions,
+        organizationPrefill,
+        input.catalogGrant,
+        timestamp,
+      ),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      finalizedAt: null,
+    });
+  }
+
   async getApplicationWorkspace(user: PlatformUser, workspaceId: string) {
     const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
     return {
@@ -1401,6 +1585,308 @@ export class ApplicationServices {
     };
   }
 
+  async createProposalWorkspace(user: PlatformUser, input: CreateProposalWorkspaceInput) {
+    this.requireRole(user, "requester");
+
+    const trackedGrantId = this.normalizeOptionalText(input.trackedGrantId);
+    if (trackedGrantId) {
+      return this.createProposalWorkspaceFromGrant(user, trackedGrantId);
+    }
+
+    if (!input.manualOpportunity) {
+      throw new AppError(
+        400,
+        "invalid_input",
+        "trackedGrantId or manualOpportunity is required to create proposal work.",
+      );
+    }
+
+    const organization = await this.findOrganizationForUser(user);
+    const timestamp = now();
+    const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
+      title: this.buildProposalWorkspaceTitle(input.manualOpportunity.title),
+      documentType: "grant_proposal",
+      catalogGrant: null,
+    });
+    const workspace = await this.store.createProposalWorkspace({
+      id: makeId("proposal"),
+      ownerUserId: user.id,
+      organizationId: organization?.id ?? null,
+      trackedGrantId: null,
+      opportunity: this.normalizeManualProposalOpportunity(input.manualOpportunity),
+      stage: "qualifying",
+      summary: "",
+      nextSteps: [],
+      openQuestions: [],
+      primaryApplicationWorkspaceId: primaryApplicationWorkspace.id,
+      feasibilitySnapshot: null,
+      contacts: [],
+      outreachEvents: [],
+      outcome: null,
+      proposalJobId: null,
+      engagementId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const state = await this.store.readState();
+    return {
+      workspace: this.toPublicProposalWorkspace(workspace, state),
+      created: true,
+    };
+  }
+
+  async createProposalWorkspaceFromGrant(user: PlatformUser, grantId: string) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireGrantOwner(user, grantId);
+    const existing =
+      (grant.proposalWorkspaceId ? await this.store.findProposalWorkspaceById(grant.proposalWorkspaceId) : null) ??
+      (await this.store.findProposalWorkspaceByTrackedGrantId(grant.id));
+    if (existing) {
+      const state = await this.store.readState();
+      if (!existing.primaryApplicationWorkspaceId) {
+        const catalogGrant = state.grantCatalogEntries.find((candidate) => candidate.sourceGrantId === grant.id) ?? null;
+        const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
+          title: this.buildProposalWorkspaceTitle(grant.title),
+          documentType: grant.fundingType === "rfp" ? "other" : "grant_proposal",
+          catalogGrant,
+        });
+        const linkedWorkspace = await this.store.saveProposalWorkspace({
+          ...existing,
+          primaryApplicationWorkspaceId: primaryApplicationWorkspace.id,
+          updatedAt: now(),
+        });
+        const nextState = await this.store.readState();
+        return {
+          workspace: this.toPublicProposalWorkspace(linkedWorkspace, nextState),
+          created: false,
+        };
+      }
+      return {
+        workspace: this.toPublicProposalWorkspace(existing, state),
+        created: false,
+      };
+    }
+
+    const organization = await this.findOrganizationForUser(user);
+    const timestamp = now();
+    const catalogGrant = (await this.store.readState()).grantCatalogEntries.find(
+      (candidate) => candidate.sourceGrantId === grant.id,
+    );
+    const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
+      title: this.buildProposalWorkspaceTitle(grant.title),
+      documentType: "grant_proposal",
+      catalogGrant: catalogGrant ?? null,
+    });
+    const workspace = await this.store.createProposalWorkspace({
+      id: makeId("proposal"),
+      ownerUserId: user.id,
+      organizationId: organization?.id ?? null,
+      trackedGrantId: grant.id,
+      opportunity: {
+        sourceType: "tracked_grant",
+        title: grant.title,
+        sponsor: grant.sponsor,
+        fundingType: grant.fundingType,
+        amountSummary: grant.amountSummary,
+        deadlineSummary: grant.deadlineSummary,
+        geography: grant.geography,
+        sourceUrl: null,
+        notes: grant.whyFit,
+      },
+      stage: "qualifying",
+      summary: "",
+      nextSteps: [...grant.nextActions],
+      openQuestions: [],
+      primaryApplicationWorkspaceId: primaryApplicationWorkspace.id,
+      feasibilitySnapshot: null,
+      contacts: [],
+      outreachEvents: [],
+      outcome: null,
+      proposalJobId: grant.proposalJobId,
+      engagementId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await this.store.saveTrackedGrant({
+      ...grant,
+      proposalWorkspaceId: workspace.id,
+      updatedAt: timestamp,
+    });
+    const state = await this.store.readState();
+    return {
+      workspace: this.toPublicProposalWorkspace(workspace, state),
+      created: true,
+    };
+  }
+
+  async listProposalWorkspaces(user: PlatformUser) {
+    const state = await this.store.readState();
+    return {
+      workspaces: this.listAccessibleProposalWorkspaces(user, state),
+    };
+  }
+
+  async getProposalWorkspace(user: PlatformUser, workspaceId: string) {
+    const state = await this.store.readState();
+    const workspace = this.requireProposalWorkspaceViewer(user, workspaceId, state);
+    return {
+      workspace: this.toPublicProposalWorkspace(workspace, state),
+    };
+  }
+
+  async updateProposalWorkspace(user: PlatformUser, workspaceId: string, input: UpdateProposalWorkspaceInput) {
+    const state = await this.store.readState();
+    const workspace = this.requireProposalWorkspaceEditor(user, workspaceId, state);
+    const updatedAt = now();
+    const savedWorkspace = await this.store.saveProposalWorkspace({
+      ...workspace,
+      stage:
+        input.stage === undefined
+          ? workspace.stage
+          : this.requireProposalWorkspaceStage(input.stage),
+      summary: input.summary === undefined ? workspace.summary : String(input.summary).trim(),
+      nextSteps:
+        input.nextSteps === undefined ? workspace.nextSteps : normalizeTextList(input.nextSteps, "nextSteps"),
+      openQuestions:
+        input.openQuestions === undefined
+          ? workspace.openQuestions
+          : normalizeTextList(input.openQuestions, "openQuestions"),
+      feasibilitySnapshot:
+        input.feasibilitySnapshot === undefined
+          ? workspace.feasibilitySnapshot
+          : this.normalizeProposalFeasibilitySnapshot(input.feasibilitySnapshot, updatedAt),
+      contacts:
+        input.contacts === undefined ? workspace.contacts : this.normalizeProposalContacts(input.contacts, updatedAt),
+      outreachEvents:
+        input.outreachEvents === undefined
+          ? workspace.outreachEvents
+          : this.normalizeProposalOutreachEvents(input.outreachEvents, updatedAt),
+      outcome:
+        input.outcome === undefined ? workspace.outcome : this.normalizeProposalOutcome(input.outcome),
+      updatedAt,
+    });
+    const nextState = await this.store.readState();
+    return {
+      workspace: this.toPublicProposalWorkspace(savedWorkspace, nextState),
+    };
+  }
+
+  async runProposalWorkspaceAction(
+    user: PlatformUser,
+    workspaceId: string,
+    input: RunProposalWorkspaceActionInput,
+  ) {
+    this.requireRole(user, "requester");
+
+    const state = await this.store.readState();
+    const workspace = this.requireProposalWorkspaceEditor(user, workspaceId, state);
+    const providerConnection = await this.requireProviderConnectionForAction(
+      user,
+      input.providerConnectionId,
+      "proposal_workspace",
+    );
+    const timestamp = now();
+    const primaryApplicationWorkspace = workspace.primaryApplicationWorkspaceId
+      ? state.applicationWorkspaces.find((candidate) => candidate.id === workspace.primaryApplicationWorkspaceId) ?? null
+      : null;
+
+    let savedWorkspace = workspace;
+    let savedApplicationWorkspace = primaryApplicationWorkspace;
+    let outputText = "";
+
+    switch (input.action) {
+      case "evaluate_feasibility": {
+        const snapshot = this.buildProposalFeasibilitySnapshot(workspace, timestamp);
+        savedWorkspace = {
+          ...workspace,
+          stage: workspace.stage === "qualifying" ? workspace.stage : "drafting",
+          summary: `Feasibility evaluated for ${workspace.opportunity.title}.`,
+          feasibilitySnapshot: snapshot,
+          updatedAt: timestamp,
+        };
+        outputText = `Evaluated feasibility for ${workspace.opportunity.title}: ${snapshot.verdict}.`;
+        break;
+      }
+      case "discover_contacts": {
+        const contacts = this.discoverProposalContacts(workspace, timestamp);
+        savedWorkspace = {
+          ...workspace,
+          summary: `Contact discovery completed for ${workspace.opportunity.title}.`,
+          contacts,
+          updatedAt: timestamp,
+        };
+        outputText = `Discovered ${contacts.length} sponsor contact${contacts.length === 1 ? "" : "s"} for ${workspace.opportunity.title}.`;
+        break;
+      }
+      case "draft_outreach": {
+        const outreachEvent = this.draftProposalOutreach(workspace, timestamp);
+        savedWorkspace = {
+          ...workspace,
+          stage: "outreach",
+          summary: `Outreach draft prepared for ${workspace.opportunity.title}.`,
+          outreachEvents: [...workspace.outreachEvents, outreachEvent],
+          updatedAt: timestamp,
+        };
+        outputText = `Drafted outreach for ${workspace.opportunity.title}.`;
+        break;
+      }
+      case "plan_next_steps": {
+        const nextSteps = this.planProposalNextSteps(workspace);
+        savedWorkspace = {
+          ...workspace,
+          summary: `Next steps planned for ${workspace.opportunity.title}.`,
+          nextSteps,
+          updatedAt: timestamp,
+        };
+        outputText = `Planned the next steps for ${workspace.opportunity.title}.`;
+        break;
+      }
+      case "refresh_draft": {
+        if (!savedApplicationWorkspace) {
+          savedApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
+            title: this.buildProposalWorkspaceTitle(workspace.opportunity.title),
+            documentType: "grant_proposal",
+            catalogGrant: null,
+          });
+        }
+        const refreshedApplicationWorkspace = this.refreshProposalDraftWorkspace(
+          workspace,
+          savedApplicationWorkspace,
+          timestamp,
+        );
+        savedApplicationWorkspace = await this.store.saveApplicationWorkspace(refreshedApplicationWorkspace);
+        savedWorkspace = {
+          ...workspace,
+          summary: `Draft refreshed in ${savedApplicationWorkspace.title}.`,
+          primaryApplicationWorkspaceId: savedApplicationWorkspace.id,
+          updatedAt: timestamp,
+        };
+        outputText = `Refreshed the linked draft in ${savedApplicationWorkspace.title}.`;
+        break;
+      }
+      default:
+        throw new AppError(400, "invalid_input", "action is not recognized.");
+    }
+
+    const persistedWorkspace = await this.store.saveProposalWorkspace(savedWorkspace);
+    const execution = await this.store.createAgentExecutionRecord({
+      id: makeId("execution"),
+      actorUserId: user.id,
+      providerConnectionId: providerConnection.id,
+      targetType: "proposal_workspace",
+      targetId: workspace.id,
+      action: input.action,
+      outputText,
+      createdAt: timestamp,
+    });
+    const nextState = await this.store.readState();
+    return {
+      workspace: this.toPublicProposalWorkspace(persistedWorkspace, nextState),
+      execution: this.toPublicAgentExecutionRecord(execution),
+    };
+  }
+
   async createProviderConnection(user: PlatformUser, input: CreateProviderConnectionInput) {
     const scope = this.requireProviderConnectionScope(input.scope);
     const organization =
@@ -1455,6 +1941,22 @@ export class ApplicationServices {
     this.requireRole(user, "requester");
 
     const grant = await this.requireGrantOwner(user, grantId);
+    const linkedWorkspace =
+      (grant.proposalWorkspaceId ? await this.store.findProposalWorkspaceById(grant.proposalWorkspaceId) : null) ??
+      (await this.store.findProposalWorkspaceByTrackedGrantId(grant.id));
+    if (linkedWorkspace) {
+      const job = await this.createOrAttachProposalJobForWorkspace(user, linkedWorkspace, grant);
+      const nextState = await this.store.readState();
+      return {
+        job,
+        grant: nextState.trackedGrants.find((candidate) => candidate.id === grant.id) ?? grant,
+        workspace: this.toPublicProposalWorkspace(
+          nextState.proposalWorkspaces.find((candidate) => candidate.id === linkedWorkspace.id) ?? linkedWorkspace,
+          nextState,
+        ),
+      };
+    }
+
     if (grant.proposalJobId) {
       const existingJob = await this.store.findJobById(grant.proposalJobId);
       if (existingJob) {
@@ -1486,10 +1988,45 @@ export class ApplicationServices {
       proposalJobId: createdJob.id,
       updatedAt: now(),
     });
+    if (grant.proposalWorkspaceId) {
+      const linkedWorkspace = await this.store.findProposalWorkspaceById(grant.proposalWorkspaceId);
+      if (linkedWorkspace) {
+        await this.store.saveProposalWorkspace({
+          ...linkedWorkspace,
+          proposalJobId: createdJob.id,
+          updatedAt: now(),
+        });
+      }
+    }
 
     return {
       job: createdJob,
       grant: updatedGrant,
+    };
+  }
+
+  async createProposalJobFromProposalWorkspace(user: PlatformUser, workspaceId: string) {
+    this.requireRole(user, "requester");
+
+    const state = await this.store.readState();
+    const workspace = this.requireProposalWorkspaceEditor(user, workspaceId, state);
+    const trackedGrant =
+      workspace.trackedGrantId
+        ? state.trackedGrants.find((candidate) => candidate.id === workspace.trackedGrantId && candidate.requesterId === user.id) ??
+          null
+        : null;
+    const job = await this.createOrAttachProposalJobForWorkspace(user, workspace, trackedGrant);
+    const nextState = await this.store.readState();
+
+    return {
+      job,
+      grant: trackedGrant
+        ? nextState.trackedGrants.find((candidate) => candidate.id === trackedGrant.id) ?? trackedGrant
+        : null,
+      workspace: this.toPublicProposalWorkspace(
+        nextState.proposalWorkspaces.find((candidate) => candidate.id === workspace.id) ?? workspace,
+        nextState,
+      ),
     };
   }
 
@@ -1524,6 +2061,71 @@ export class ApplicationServices {
     };
 
     return { job: await this.store.createJob(job) };
+  }
+
+  private async createOrAttachProposalJobForWorkspace(
+    user: PlatformUser,
+    workspace: PlatformProposalWorkspace,
+    grant: PlatformTrackedGrant | null,
+  ): Promise<PlatformJob> {
+    const timestamp = now();
+    const existingJobId = workspace.proposalJobId ?? grant?.proposalJobId ?? null;
+    if (existingJobId) {
+      const existingJob = await this.store.findJobById(existingJobId);
+      if (existingJob) {
+        if (workspace.proposalJobId !== existingJob.id) {
+          await this.store.saveProposalWorkspace({
+            ...workspace,
+            proposalJobId: existingJob.id,
+            updatedAt: timestamp,
+          });
+        }
+        if (grant && grant.proposalJobId !== existingJob.id) {
+          await this.store.saveTrackedGrant({
+            ...grant,
+            proposalJobId: existingJob.id,
+            updatedAt: timestamp,
+          });
+        }
+        return existingJob;
+      }
+    }
+
+    const job = await this.store.createJob({
+      id: makeId("job"),
+      requesterId: user.id,
+      type: "grant_proposal",
+      grantId: grant?.id ?? workspace.trackedGrantId,
+      targetType: "proposal_workspace",
+      targetId: workspace.id,
+      specialistRole: null,
+      title: `Grant proposal for ${workspace.opportunity.title}`,
+      description: [
+        `Prepare and submit a proposal for ${workspace.opportunity.title}.`,
+        `Sponsor: ${workspace.opportunity.sponsor}.`,
+        workspace.opportunity.notes ? `Notes: ${workspace.opportunity.notes}` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      fundingNeed: `${workspace.opportunity.fundingType} proposal and submission support`,
+      status: "open",
+      createdAt: timestamp,
+    });
+
+    await this.store.saveProposalWorkspace({
+      ...workspace,
+      proposalJobId: job.id,
+      updatedAt: timestamp,
+    });
+    if (grant) {
+      await this.store.saveTrackedGrant({
+        ...grant,
+        proposalJobId: job.id,
+        updatedAt: timestamp,
+      });
+    }
+
+    return job;
   }
 
   async listJobs(): Promise<{ jobs: DashboardJob[] }> {
@@ -2648,6 +3250,118 @@ export class ApplicationServices {
     }));
   }
 
+  private buildProposalWorkspaceTitle(name: string): string {
+    return `Proposal draft for ${name}`;
+  }
+
+  private buildProposalFeasibilitySnapshot(
+    workspace: PlatformProposalWorkspace,
+    timestamp: string,
+  ): PlatformProposalFeasibilitySnapshot {
+    const hasContacts = workspace.contacts.length > 0;
+    return {
+      verdict: workspace.stage === "declined" || workspace.stage === "no_bid" ? "hold" : hasContacts ? "go" : "conditional_go",
+      confidence: hasContacts ? "high" : workspace.opportunity.sourceType === "manual" ? "medium" : "low",
+      blockers: hasContacts ? [] : ["No sponsor contact has been recorded yet."],
+      assumptions: [
+        `${workspace.opportunity.sponsor} is still an active opportunity.`,
+        workspace.opportunity.notes ? workspace.opportunity.notes : `The pursuit is based on ${workspace.opportunity.title}.`,
+      ].filter(Boolean),
+      requiredDocuments: ["Proposal draft", "Budget", "Sponsor contact list"],
+      recommendedNextStep:
+        workspace.primaryApplicationWorkspaceId
+          ? `Refresh the linked draft in ${workspace.opportunity.title}.`
+          : `Create the linked draft for ${workspace.opportunity.title}.`,
+      updatedAt: timestamp,
+    };
+  }
+
+  private discoverProposalContacts(
+    workspace: PlatformProposalWorkspace,
+    timestamp: string,
+  ): PlatformProposalContact[] {
+    return [
+      {
+        id: makeId("contact"),
+        name: `${workspace.opportunity.sponsor} intake`,
+        roleTitle: "Sponsor contact",
+        email: null,
+        phone: null,
+        organization: workspace.opportunity.sponsor,
+        notes: workspace.opportunity.sourceUrl ? `Source: ${workspace.opportunity.sourceUrl}` : workspace.opportunity.notes,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ];
+  }
+
+  private draftProposalOutreach(
+    workspace: PlatformProposalWorkspace,
+    timestamp: string,
+  ): PlatformProposalOutreachEvent {
+    return {
+      id: makeId("outreach"),
+      kind: "email",
+      direction: "outbound",
+      subject: `Proposal outreach for ${workspace.opportunity.title}`,
+      summary: `Drafted sponsor outreach for ${workspace.opportunity.sponsor} regarding ${workspace.opportunity.title}.`,
+      occurredAt: timestamp,
+      createdAt: timestamp,
+    };
+  }
+
+  private planProposalNextSteps(workspace: PlatformProposalWorkspace): string[] {
+    return [
+      `Refresh the linked draft for ${workspace.opportunity.title}.`,
+      `Confirm sponsor contact details for ${workspace.opportunity.sponsor}.`,
+      "Prepare the submission package.",
+    ];
+  }
+
+  private refreshProposalDraftWorkspace(
+    workspace: PlatformProposalWorkspace,
+    applicationWorkspace: PlatformApplicationWorkspace,
+    timestamp: string,
+  ): PlatformApplicationWorkspace {
+    const sections = applicationWorkspace.sections.map((section) => ({
+      ...section,
+      content: this.composeProposalDraftSectionContent(workspace, section),
+      updatedAt: timestamp,
+    }));
+
+    return {
+      ...applicationWorkspace,
+      sections,
+      updatedAt: timestamp,
+    };
+  }
+
+  private composeProposalDraftSectionContent(
+    workspace: PlatformProposalWorkspace,
+    section: PlatformApplicationWorkspaceSection,
+  ): string {
+    const sponsor = workspace.opportunity.sponsor;
+    const title = workspace.opportunity.title;
+    if (section.key === "organization_profile") {
+      return `${sponsor} is the sponsor for ${title}. The proposal workspace is currently in the ${workspace.stage} stage.`;
+    }
+
+    if (section.key === "project_summary" || section.key === "need_statement") {
+      return [
+        `Proposal draft for ${title}.`,
+        workspace.summary ? `Workspace summary: ${workspace.summary}` : "",
+        workspace.feasibilitySnapshot
+          ? `Feasibility: ${workspace.feasibilitySnapshot.verdict} (${workspace.feasibilitySnapshot.confidence}).`
+          : "",
+        workspace.nextSteps.length ? `Next steps: ${workspace.nextSteps.join("; ")}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    return workspace.summary || `Proposal draft content for ${title}.`;
+  }
+
   private prefillWorkspaceSection(
     sectionKey: string,
     organizationPrefill: PlatformOrganizationPrefill | null,
@@ -2686,6 +3400,162 @@ export class ApplicationServices {
     }
 
     return section.content || this.prefillWorkspaceSection(section.key, organizationPrefill, grant);
+  }
+
+  private listAccessibleProposalWorkspaces(user: PlatformUser, state: PlatformState) {
+    const organization =
+      state.organizations.find((candidate) => this.userBelongsToOrganization(candidate, user.id)) ?? null;
+    return state.proposalWorkspaces
+      .filter(
+        (workspace) =>
+          workspace.ownerUserId === user.id ||
+          (organization ? workspace.organizationId === organization.id : false),
+      )
+      .map((workspace) => this.toPublicProposalWorkspace(workspace, state))
+      .sort(byCreatedAt);
+  }
+
+  private requireProposalWorkspaceViewer(
+    user: PlatformUser,
+    workspaceId: string,
+    state: PlatformState,
+  ): PlatformProposalWorkspace {
+    const workspace = state.proposalWorkspaces.find((candidate) => candidate.id === workspaceId);
+    if (!workspace) {
+      throw new AppError(404, "proposal_workspace_not_found", "The requested proposal workspace does not exist.");
+    }
+
+    if (workspace.ownerUserId === user.id) {
+      return workspace;
+    }
+
+    if (
+      workspace.organizationId &&
+      state.organizations.some(
+        (organization) =>
+          organization.id === workspace.organizationId &&
+          this.userBelongsToOrganization(organization, user.id),
+      )
+    ) {
+      return workspace;
+    }
+
+    throw new AppError(403, "forbidden", "You do not have access to this proposal workspace.");
+  }
+
+  private requireProposalWorkspaceEditor(
+    user: PlatformUser,
+    workspaceId: string,
+    state: PlatformState,
+  ): PlatformProposalWorkspace {
+    const workspace = this.requireProposalWorkspaceViewer(user, workspaceId, state);
+    if (workspace.ownerUserId !== user.id) {
+      throw new AppError(403, "forbidden", "Only the proposal owner can update this pursuit right now.");
+    }
+
+    return workspace;
+  }
+
+  private normalizeManualProposalOpportunity(input: NonNullable<CreateProposalWorkspaceInput["manualOpportunity"]>) {
+    return {
+      sourceType: "manual" as const,
+      title: requireText(input.title, "manualOpportunity.title"),
+      sponsor: requireText(input.sponsor, "manualOpportunity.sponsor"),
+      fundingType: requireText(input.fundingType, "manualOpportunity.fundingType"),
+      amountSummary: this.normalizeOptionalText(input.amountSummary),
+      deadlineSummary: this.normalizeOptionalText(input.deadlineSummary),
+      geography: this.normalizeOptionalText(input.geography),
+      sourceUrl: this.normalizeOptionalText(input.sourceUrl),
+      notes: this.normalizeOptionalText(input.notes),
+    };
+  }
+
+  private normalizeProposalFeasibilitySnapshot(
+    input: UpdateProposalWorkspaceInput["feasibilitySnapshot"],
+    updatedAt: string,
+  ): PlatformProposalFeasibilitySnapshot | null {
+    if (input === null) {
+      return null;
+    }
+
+    if (!input) {
+      throw new AppError(400, "invalid_input", "feasibilitySnapshot must be an object when provided.");
+    }
+
+    return {
+      verdict: requireText(input.verdict, "feasibilitySnapshot.verdict"),
+      confidence: this.requireProposalFeasibilityConfidence(input.confidence),
+      blockers: input.blockers ? normalizeTextList(input.blockers, "feasibilitySnapshot.blockers") : [],
+      assumptions: input.assumptions
+        ? normalizeTextList(input.assumptions, "feasibilitySnapshot.assumptions")
+        : [],
+      requiredDocuments: input.requiredDocuments
+        ? normalizeTextList(input.requiredDocuments, "feasibilitySnapshot.requiredDocuments")
+        : [],
+      recommendedNextStep: requireText(
+        input.recommendedNextStep,
+        "feasibilitySnapshot.recommendedNextStep",
+      ),
+      updatedAt,
+    };
+  }
+
+  private normalizeProposalContacts(
+    value: UpdateProposalWorkspaceInput["contacts"],
+    timestamp: string,
+  ): PlatformProposalContact[] {
+    if (!Array.isArray(value)) {
+      throw new AppError(400, "invalid_input", "contacts must be a list when provided.");
+    }
+
+    return value.map((contact) => ({
+      id: makeId("contact"),
+      name: requireText(contact.name, "contacts.name"),
+      roleTitle: this.normalizeOptionalText(contact.roleTitle),
+      email: this.normalizeOptionalText(contact.email),
+      phone: this.normalizeOptionalText(contact.phone),
+      organization: this.normalizeOptionalText(contact.organization),
+      notes: this.normalizeOptionalText(contact.notes),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+  }
+
+  private normalizeProposalOutreachEvents(
+    value: UpdateProposalWorkspaceInput["outreachEvents"],
+    timestamp: string,
+  ): PlatformProposalOutreachEvent[] {
+    if (!Array.isArray(value)) {
+      throw new AppError(400, "invalid_input", "outreachEvents must be a list when provided.");
+    }
+
+    return value.map((event) => ({
+      id: makeId("outreach"),
+      kind: this.requireProposalOutreachKind(event.kind),
+      direction: this.requireProposalOutreachDirection(event.direction),
+      subject: this.normalizeOptionalText(event.subject),
+      summary: requireText(event.summary, "outreachEvents.summary"),
+      occurredAt: requireText(event.occurredAt, "outreachEvents.occurredAt"),
+      createdAt: timestamp,
+    }));
+  }
+
+  private normalizeProposalOutcome(
+    value: UpdateProposalWorkspaceInput["outcome"],
+  ): PlatformProposalOutcome | null {
+    if (value === null) {
+      return null;
+    }
+
+    if (!value) {
+      throw new AppError(400, "invalid_input", "outcome must be an object when provided.");
+    }
+
+    return {
+      status: this.requireProposalOutcomeStatus(value.status),
+      summary: requireText(value.summary, "outcome.summary"),
+      recordedAt: requireText(value.recordedAt, "outcome.recordedAt"),
+    };
   }
 
   private async getScenarioNameMap(
@@ -2786,9 +3656,75 @@ export class ApplicationServices {
       case "grant_catalog_entry":
       case "application_workspace":
       case "workspace_section":
+      case "proposal_workspace":
         return targetType;
       default:
         throw new AppError(400, "invalid_target_type", "targetType is not recognized.");
+    }
+  }
+
+  private requireProposalWorkspaceStage(stage: ProposalWorkspaceStage): ProposalWorkspaceStage {
+    switch (stage) {
+      case "qualifying":
+      case "drafting":
+      case "outreach":
+      case "submitted":
+      case "awarded":
+      case "declined":
+      case "no_bid":
+        return stage;
+      default:
+        throw new AppError(400, "invalid_proposal_stage", "stage is not recognized.");
+    }
+  }
+
+  private requireProposalFeasibilityConfidence(
+    confidence: ProposalFeasibilityConfidence,
+  ): ProposalFeasibilityConfidence {
+    switch (confidence) {
+      case "high":
+      case "medium":
+      case "low":
+        return confidence;
+      default:
+        throw new AppError(400, "invalid_feasibility_confidence", "confidence must be high, medium, or low.");
+    }
+  }
+
+  private requireProposalOutreachKind(kind: ProposalOutreachKind): ProposalOutreachKind {
+    switch (kind) {
+      case "email":
+      case "call":
+      case "meeting":
+      case "note":
+      case "other":
+        return kind;
+      default:
+        throw new AppError(400, "invalid_outreach_kind", "kind is not recognized.");
+    }
+  }
+
+  private requireProposalOutreachDirection(
+    direction: ProposalOutreachDirection,
+  ): ProposalOutreachDirection {
+    switch (direction) {
+      case "outbound":
+      case "inbound":
+        return direction;
+      default:
+        throw new AppError(400, "invalid_outreach_direction", "direction must be outbound or inbound.");
+    }
+  }
+
+  private requireProposalOutcomeStatus(status: ProposalOutcomeStatus): ProposalOutcomeStatus {
+    switch (status) {
+      case "submitted":
+      case "awarded":
+      case "declined":
+      case "no_bid":
+        return status;
+      default:
+        throw new AppError(400, "invalid_proposal_outcome", "outcome status is not recognized.");
     }
   }
 
@@ -2918,6 +3854,12 @@ export class ApplicationServices {
 
     if (targetType === "application_workspace") {
       await this.requireApplicationWorkspaceOwner(user, targetId);
+      return;
+    }
+
+    if (targetType === "proposal_workspace") {
+      const state = await this.store.readState();
+      this.requireProposalWorkspaceEditor(user, targetId, state);
       return;
     }
 

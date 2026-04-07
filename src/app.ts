@@ -801,6 +801,12 @@ export function createApp(options: AppOptions = {}) {
     return c.json(await services.createProposalJobFromGrant(user, c.req.param("id")), 201);
   });
 
+  app.post("/api/grants/:id/proposal-workspace", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const result = await services.createProposalWorkspaceFromGrant(user, c.req.param("id"));
+    return c.json({ workspace: result.workspace }, result.created ? 201 : 200);
+  });
+
   app.get("/api/catalog/grants", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     const bookmarked = new URL(c.req.url).searchParams.get("bookmarked") === "true";
@@ -901,6 +907,88 @@ export function createApp(options: AppOptions = {}) {
     );
   });
 
+  app.get("/api/proposal-workspaces", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.listProposalWorkspaces(user));
+  });
+
+  app.post("/api/proposal-workspaces", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      trackedGrantId?: string | null;
+      manualOpportunity?: {
+        title: string;
+        sponsor: string;
+        fundingType: string;
+        amountSummary?: string | null;
+        deadlineSummary?: string | null;
+        geography?: string | null;
+        sourceUrl?: string | null;
+        notes?: string | null;
+      } | null;
+    }>(c.req.raw);
+    const result = await services.createProposalWorkspace(user, payload);
+    return c.json({ workspace: result.workspace }, result.created ? 201 : 200);
+  });
+
+  app.get("/api/proposal-workspaces/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.getProposalWorkspace(user, c.req.param("id")));
+  });
+
+  app.patch("/api/proposal-workspaces/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      stage?: "qualifying" | "drafting" | "outreach" | "submitted" | "awarded" | "declined" | "no_bid";
+      summary?: string;
+      nextSteps?: string[];
+      openQuestions?: string[];
+      feasibilitySnapshot?: {
+        verdict: string;
+        confidence: "high" | "medium" | "low";
+        blockers?: string[];
+        assumptions?: string[];
+        requiredDocuments?: string[];
+        recommendedNextStep: string;
+      } | null;
+      contacts?: Array<{
+        name: string;
+        roleTitle?: string | null;
+        email?: string | null;
+        phone?: string | null;
+        organization?: string | null;
+        notes?: string | null;
+      }>;
+      outreachEvents?: Array<{
+        kind: "email" | "call" | "meeting" | "note" | "other";
+        direction: "outbound" | "inbound";
+        subject?: string | null;
+        summary: string;
+        occurredAt: string;
+      }>;
+      outcome?: {
+        status: "submitted" | "awarded" | "declined" | "no_bid";
+        summary: string;
+        recordedAt: string;
+      } | null;
+    }>(c.req.raw);
+    return c.json(await services.updateProposalWorkspace(user, c.req.param("id"), payload));
+  });
+
+  app.post("/api/proposal-workspaces/:id/actions", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      action: "evaluate_feasibility" | "discover_contacts" | "draft_outreach" | "plan_next_steps" | "refresh_draft";
+      providerConnectionId: string;
+    }>(c.req.raw);
+    return c.json(await services.runProposalWorkspaceAction(user, c.req.param("id"), payload));
+  });
+
+  app.post("/api/proposal-workspaces/:id/proposal-job", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    return c.json(await services.createProposalJobFromProposalWorkspace(user, c.req.param("id")), 201);
+  });
+
   app.post("/api/provider-connections", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     const payload = await parseJson<{
@@ -908,7 +996,9 @@ export function createApp(options: AppOptions = {}) {
       provider: string;
       label: string;
       authType: "byok" | "oauth";
-      allowedArtifactTypes: Array<"grant_catalog_entry" | "application_workspace" | "workspace_section">;
+      allowedArtifactTypes: Array<
+        "grant_catalog_entry" | "application_workspace" | "workspace_section" | "proposal_workspace"
+      >;
     }>(c.req.raw);
     return c.json(await services.createProviderConnection(user, payload), 201);
   });
@@ -1367,7 +1457,7 @@ export function createApp(options: AppOptions = {}) {
             authType: String(params.authType ?? "") as "byok" | "oauth",
             allowedArtifactTypes: Array.isArray(params.allowedArtifactTypes)
               ? params.allowedArtifactTypes.map((value) => String(value)) as Array<
-                  "grant_catalog_entry" | "application_workspace" | "workspace_section"
+                  "grant_catalog_entry" | "application_workspace" | "workspace_section" | "proposal_workspace"
                 >
               : [],
           });
@@ -1460,6 +1550,157 @@ export function createApp(options: AppOptions = {}) {
         case "grants.createProposalJob": {
           const user = await services.authenticate(authToken);
           result = await services.createProposalJobFromGrant(user, String(params.grantId ?? ""));
+          break;
+        }
+        case "proposalWorkspaces.createProposalJob": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProposalJobFromProposalWorkspace(user, String(params.workspaceId ?? ""));
+          break;
+        }
+        case "proposalWorkspaces.list": {
+          const user = await services.authenticate(authToken);
+          result = await services.listProposalWorkspaces(user);
+          break;
+        }
+        case "proposalWorkspaces.create": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProposalWorkspace(user, {
+            trackedGrantId: typeof params.trackedGrantId === "string" ? params.trackedGrantId : null,
+            manualOpportunity:
+              params.manualOpportunity && typeof params.manualOpportunity === "object"
+                ? {
+                    title: String((params.manualOpportunity as Record<string, unknown>).title ?? ""),
+                    sponsor: String((params.manualOpportunity as Record<string, unknown>).sponsor ?? ""),
+                    fundingType: String((params.manualOpportunity as Record<string, unknown>).fundingType ?? ""),
+                    amountSummary:
+                      typeof (params.manualOpportunity as Record<string, unknown>).amountSummary === "string"
+                        ? String((params.manualOpportunity as Record<string, unknown>).amountSummary)
+                        : null,
+                    deadlineSummary:
+                      typeof (params.manualOpportunity as Record<string, unknown>).deadlineSummary === "string"
+                        ? String((params.manualOpportunity as Record<string, unknown>).deadlineSummary)
+                        : null,
+                    geography:
+                      typeof (params.manualOpportunity as Record<string, unknown>).geography === "string"
+                        ? String((params.manualOpportunity as Record<string, unknown>).geography)
+                        : null,
+                    sourceUrl:
+                      typeof (params.manualOpportunity as Record<string, unknown>).sourceUrl === "string"
+                        ? String((params.manualOpportunity as Record<string, unknown>).sourceUrl)
+                        : null,
+                    notes:
+                      typeof (params.manualOpportunity as Record<string, unknown>).notes === "string"
+                        ? String((params.manualOpportunity as Record<string, unknown>).notes)
+                        : null,
+                  }
+                : null,
+          });
+          break;
+        }
+        case "proposalWorkspaces.get": {
+          const user = await services.authenticate(authToken);
+          result = await services.getProposalWorkspace(user, String(params.workspaceId ?? ""));
+          break;
+        }
+        case "proposalWorkspaces.update": {
+          const user = await services.authenticate(authToken);
+          result = await services.updateProposalWorkspace(user, String(params.workspaceId ?? ""), {
+            stage:
+              typeof params.stage === "string"
+                ? (params.stage as "qualifying" | "drafting" | "outreach" | "submitted" | "awarded" | "declined" | "no_bid")
+                : undefined,
+            summary: typeof params.summary === "string" ? params.summary : undefined,
+            nextSteps: Array.isArray(params.nextSteps) ? params.nextSteps.map((entry) => String(entry)) : undefined,
+            openQuestions: Array.isArray(params.openQuestions)
+              ? params.openQuestions.map((entry) => String(entry))
+              : undefined,
+            feasibilitySnapshot:
+              params.feasibilitySnapshot === null
+                ? null
+                : params.feasibilitySnapshot && typeof params.feasibilitySnapshot === "object"
+                  ? {
+                      verdict: String((params.feasibilitySnapshot as Record<string, unknown>).verdict ?? ""),
+                      confidence:
+                        ((params.feasibilitySnapshot as Record<string, unknown>).confidence as
+                          | "high"
+                          | "medium"
+                          | "low") ?? "medium",
+                      blockers: Array.isArray((params.feasibilitySnapshot as Record<string, unknown>).blockers)
+                        ? ((params.feasibilitySnapshot as Record<string, unknown>).blockers as unknown[]).map((entry) =>
+                            String(entry),
+                          )
+                        : [],
+                      assumptions: Array.isArray((params.feasibilitySnapshot as Record<string, unknown>).assumptions)
+                        ? ((params.feasibilitySnapshot as Record<string, unknown>).assumptions as unknown[]).map((entry) =>
+                            String(entry),
+                          )
+                        : [],
+                      requiredDocuments: Array.isArray(
+                        (params.feasibilitySnapshot as Record<string, unknown>).requiredDocuments,
+                      )
+                        ? ((params.feasibilitySnapshot as Record<string, unknown>).requiredDocuments as unknown[]).map(
+                            (entry) => String(entry),
+                          )
+                        : [],
+                      recommendedNextStep: String(
+                        (params.feasibilitySnapshot as Record<string, unknown>).recommendedNextStep ?? "",
+                      ),
+                    }
+                  : undefined,
+            contacts: Array.isArray(params.contacts)
+              ? params.contacts.map((contact) => {
+                  const record = contact as Record<string, unknown>;
+                  return {
+                    name: String(record.name ?? ""),
+                    roleTitle: typeof record.roleTitle === "string" ? record.roleTitle : null,
+                    email: typeof record.email === "string" ? record.email : null,
+                    phone: typeof record.phone === "string" ? record.phone : null,
+                    organization: typeof record.organization === "string" ? record.organization : null,
+                    notes: typeof record.notes === "string" ? record.notes : null,
+                  };
+                })
+              : undefined,
+            outreachEvents: Array.isArray(params.outreachEvents)
+              ? params.outreachEvents.map((event) => {
+                  const record = event as Record<string, unknown>;
+                  return {
+                    kind: (record.kind as "email" | "call" | "meeting" | "note" | "other") ?? "email",
+                    direction: (record.direction as "outbound" | "inbound") ?? "outbound",
+                    subject: typeof record.subject === "string" ? record.subject : null,
+                    summary: String(record.summary ?? ""),
+                    occurredAt: String(record.occurredAt ?? ""),
+                  };
+                })
+              : undefined,
+            outcome:
+              params.outcome === null
+                ? null
+                : params.outcome && typeof params.outcome === "object"
+                  ? {
+                      status:
+                        ((params.outcome as Record<string, unknown>).status as
+                          | "submitted"
+                          | "awarded"
+                          | "declined"
+                          | "no_bid") ?? "submitted",
+                      summary: String((params.outcome as Record<string, unknown>).summary ?? ""),
+                      recordedAt: String((params.outcome as Record<string, unknown>).recordedAt ?? ""),
+                    }
+                  : undefined,
+          });
+          break;
+        }
+        case "proposalWorkspaces.runAction": {
+          const user = await services.authenticate(authToken);
+          result = await services.runProposalWorkspaceAction(user, String(params.workspaceId ?? ""), {
+            action: String(params.action ?? "") as
+              | "evaluate_feasibility"
+              | "discover_contacts"
+              | "draft_outreach"
+              | "plan_next_steps"
+              | "refresh_draft",
+            providerConnectionId: String(params.providerConnectionId ?? ""),
+          });
           break;
         }
         default:

@@ -19,7 +19,7 @@ import {
 export type ApplicationDocumentType = "grant_proposal" | "loi" | "budget_narrative" | "other";
 export type ProviderConnectionScope = "user" | "organization";
 export type ProviderAuthType = "byok" | "oauth";
-export type ProviderArtifactType = "grant_catalog_entry" | "application_workspace" | "workspace_section";
+export type ProviderArtifactType = "grant_catalog_entry" | "application_workspace" | "workspace_section" | "proposal_workspace";
 
 export interface OrganizationInviteSummary {
   id: string;
@@ -159,6 +159,138 @@ export interface ApplicationWorkspaceSummary {
   createdAt: string;
   updatedAt: string;
   finalizedAt: string | null;
+}
+
+export interface ProposalGrantSummary {
+  id: string;
+  title: string;
+  sponsor: string;
+  fitScore: number;
+  amountSummary: string;
+  deadlineSummary: string;
+  geography: string;
+  queueState: "active" | "inactive";
+  proposalWorkspaceId: string | null;
+  proposalJobId: string | null;
+  requestStatus: string;
+  scenarioName: string;
+  nextActions: string[];
+}
+
+export interface ProposalWorkspaceSummary {
+  id: string;
+  ownerUserId: string;
+  organizationId: string | null;
+  trackedGrantId: string | null;
+  opportunity: {
+    sourceType: "tracked_grant" | "manual";
+    title: string;
+    sponsor: string;
+    fundingType: string;
+    amountSummary: string | null;
+    deadlineSummary: string | null;
+    geography: string | null;
+    sourceUrl: string | null;
+    notes: string | null;
+  };
+  stage: "qualifying" | "drafting" | "outreach" | "submitted" | "awarded" | "declined" | "no_bid";
+  summary: string;
+  nextSteps: string[];
+  openQuestions: string[];
+  primaryApplicationWorkspaceId: string | null;
+  primaryApplicationWorkspace: {
+    id: string;
+    title: string;
+    state: ApplicationWorkspaceSummary["state"];
+    documentType: ApplicationDocumentType;
+    updatedAt: string;
+    finalizedAt: string | null;
+  } | null;
+  feasibilitySnapshot: {
+    verdict: string;
+    confidence: "high" | "medium" | "low";
+    blockers: string[];
+    assumptions: string[];
+    requiredDocuments: string[];
+    recommendedNextStep: string;
+    updatedAt: string;
+  } | null;
+  contacts: Array<{
+    id: string;
+    name: string;
+    roleTitle: string | null;
+    email: string | null;
+    phone: string | null;
+    organization: string | null;
+    notes: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  outreachEvents: Array<{
+    id: string;
+    kind: "email" | "call" | "meeting" | "note" | "other";
+    direction: "outbound" | "inbound";
+    subject: string | null;
+    summary: string;
+    occurredAt: string;
+    createdAt: string;
+  }>;
+  outcome: {
+    status: "submitted" | "awarded" | "declined" | "no_bid";
+    summary: string;
+    recordedAt: string;
+  } | null;
+  proposalJobId: string | null;
+  proposalJob: {
+    id: string;
+    title: string;
+    status: string;
+    offerCount: number;
+  } | null;
+  engagementId: string | null;
+  engagement: {
+    id: string;
+    status: string;
+    amountUsd: string;
+    specialistName: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProposalWorkspaceUpdateInput {
+  stage?: ProposalWorkspaceSummary["stage"];
+  summary?: string;
+  nextSteps?: string[];
+  openQuestions?: string[];
+  feasibilitySnapshot?: {
+    verdict: string;
+    confidence: "high" | "medium" | "low";
+    blockers: string[];
+    assumptions: string[];
+    requiredDocuments: string[];
+    recommendedNextStep: string;
+  };
+  contacts?: Array<{
+    name: string;
+    roleTitle?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    organization?: string | null;
+    notes?: string | null;
+  }>;
+  outreachEvents?: Array<{
+    kind: "email" | "call" | "meeting" | "note" | "other";
+    direction: "outbound" | "inbound";
+    subject?: string | null;
+    summary: string;
+    occurredAt: string;
+  }>;
+  outcome?: {
+    status: "submitted" | "awarded" | "declined" | "no_bid";
+    summary: string;
+    recordedAt: string;
+  } | null;
 }
 
 export interface ProviderConnectionSummary {
@@ -308,12 +440,600 @@ function formatArtifactType(value: ProviderArtifactType): string {
   if (value === "application_workspace") {
     return "Application workspace";
   }
+  if (value === "proposal_workspace") {
+    return "Proposal workspace";
+  }
   return "Workspace section";
 }
 
 function normalizeOptionalText(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function generateLocalId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+export function ProposalWorkspaceView({
+  grants,
+  workspaces,
+  applicationWorkspaces,
+  selectedWorkspaceId: selectedWorkspaceIdProp,
+  busyAction,
+  onCreateWorkspaceFromGrant,
+  onCreateProposalJob,
+  onUpdateWorkspace,
+}: {
+  grants: ProposalGrantSummary[];
+  workspaces: ProposalWorkspaceSummary[];
+  applicationWorkspaces: ApplicationWorkspaceSummary[];
+  selectedWorkspaceId?: string | null;
+  busyAction: string | null;
+  onCreateWorkspaceFromGrant: (grantId: string) => void;
+  onCreateProposalJob: (workspaceId: string) => void;
+  onUpdateWorkspace: (workspaceId: string, input: ProposalWorkspaceUpdateInput) => void;
+}) {
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
+    () => selectedWorkspaceIdProp ?? workspaces[0]?.id ?? null,
+  );
+  const [stage, setStage] = useState<ProposalWorkspaceSummary["stage"]>("qualifying");
+  const [summary, setSummary] = useState("");
+  const [nextStepsText, setNextStepsText] = useState("");
+  const [openQuestionsText, setOpenQuestionsText] = useState("");
+  const [feasibilityVerdict, setFeasibilityVerdict] = useState("go");
+  const [feasibilityConfidence, setFeasibilityConfidence] = useState<"high" | "medium" | "low">("medium");
+  const [feasibilityBlockersText, setFeasibilityBlockersText] = useState("");
+  const [feasibilityAssumptionsText, setFeasibilityAssumptionsText] = useState("");
+  const [feasibilityDocumentsText, setFeasibilityDocumentsText] = useState("");
+  const [feasibilityNextStep, setFeasibilityNextStep] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [contactRoleTitle, setContactRoleTitle] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactOrganization, setContactOrganization] = useState("");
+  const [contactNotes, setContactNotes] = useState("");
+  const [outreachKind, setOutreachKind] = useState<"email" | "call" | "meeting" | "note" | "other">("email");
+  const [outreachDirection, setOutreachDirection] = useState<"outbound" | "inbound">("outbound");
+  const [outreachSubject, setOutreachSubject] = useState("");
+  const [outreachSummary, setOutreachSummary] = useState("");
+  const [outreachOccurredAt, setOutreachOccurredAt] = useState(new Date().toISOString());
+  const [outcomeStatus, setOutcomeStatus] = useState<"submitted" | "awarded" | "declined" | "no_bid">("submitted");
+  const [outcomeSummary, setOutcomeSummary] = useState("");
+  const [outcomeRecordedAt, setOutcomeRecordedAt] = useState(new Date().toISOString());
+
+  useEffect(() => {
+    if (selectedWorkspaceIdProp && workspaces.some((workspace) => workspace.id === selectedWorkspaceIdProp)) {
+      setSelectedWorkspaceId(selectedWorkspaceIdProp);
+      return;
+    }
+
+    if (!selectedWorkspaceId && workspaces[0]) {
+      setSelectedWorkspaceId(workspaces[0].id);
+      return;
+    }
+
+    if (selectedWorkspaceId && !workspaces.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      setSelectedWorkspaceId(workspaces[0]?.id ?? null);
+    }
+  }, [selectedWorkspaceIdProp, workspaces, selectedWorkspaceId]);
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
+  const linkedApplicationWorkspace =
+    selectedWorkspace?.primaryApplicationWorkspace ??
+    applicationWorkspaces.find((workspace) => workspace.id === selectedWorkspace?.primaryApplicationWorkspaceId) ??
+    null;
+
+  useEffect(() => {
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    setStage(selectedWorkspace.stage);
+    setSummary(selectedWorkspace.summary);
+    setNextStepsText(selectedWorkspace.nextSteps.join("\n"));
+    setOpenQuestionsText(selectedWorkspace.openQuestions.join("\n"));
+    setFeasibilityVerdict(selectedWorkspace.feasibilitySnapshot?.verdict ?? "go");
+    setFeasibilityConfidence(selectedWorkspace.feasibilitySnapshot?.confidence ?? "medium");
+    setFeasibilityBlockersText(selectedWorkspace.feasibilitySnapshot?.blockers.join("\n") ?? "");
+    setFeasibilityAssumptionsText(selectedWorkspace.feasibilitySnapshot?.assumptions.join("\n") ?? "");
+    setFeasibilityDocumentsText(selectedWorkspace.feasibilitySnapshot?.requiredDocuments.join("\n") ?? "");
+    setFeasibilityNextStep(selectedWorkspace.feasibilitySnapshot?.recommendedNextStep ?? "");
+    setContactName("");
+    setContactRoleTitle("");
+    setContactEmail("");
+    setContactPhone("");
+    setContactOrganization("");
+    setContactNotes("");
+    setOutreachKind("email");
+    setOutreachDirection("outbound");
+    setOutreachSubject("");
+    setOutreachSummary("");
+    setOutreachOccurredAt(new Date().toISOString());
+    setOutcomeStatus(selectedWorkspace.outcome?.status ?? "submitted");
+    setOutcomeSummary(selectedWorkspace.outcome?.summary ?? "");
+    setOutcomeRecordedAt(selectedWorkspace.outcome?.recordedAt ?? new Date().toISOString());
+  }, [selectedWorkspace?.id, selectedWorkspace?.updatedAt]);
+
+  function submitPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    onUpdateWorkspace(selectedWorkspace.id, {
+      stage,
+      summary,
+      nextSteps: parseTextList(nextStepsText),
+      openQuestions: parseTextList(openQuestionsText),
+    });
+  }
+
+  function submitFeasibility(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    onUpdateWorkspace(selectedWorkspace.id, {
+      feasibilitySnapshot: {
+        verdict: feasibilityVerdict,
+        confidence: feasibilityConfidence,
+        blockers: parseTextList(feasibilityBlockersText),
+        assumptions: parseTextList(feasibilityAssumptionsText),
+        requiredDocuments: parseTextList(feasibilityDocumentsText),
+        recommendedNextStep: feasibilityNextStep,
+      },
+    });
+  }
+
+  function submitContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    onUpdateWorkspace(selectedWorkspace.id, {
+      contacts: [
+        ...selectedWorkspace.contacts.map((contact) => ({
+          name: contact.name,
+          roleTitle: contact.roleTitle,
+          email: contact.email,
+          phone: contact.phone,
+          organization: contact.organization,
+          notes: contact.notes,
+        })),
+        {
+          name: contactName,
+          roleTitle: normalizeOptionalText(contactRoleTitle),
+          email: normalizeOptionalText(contactEmail),
+          phone: normalizeOptionalText(contactPhone),
+          organization: normalizeOptionalText(contactOrganization),
+          notes: normalizeOptionalText(contactNotes),
+        },
+      ],
+    });
+  }
+
+  function submitOutreach(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    onUpdateWorkspace(selectedWorkspace.id, {
+      outreachEvents: [
+        ...selectedWorkspace.outreachEvents.map((entry) => ({
+          kind: entry.kind,
+          direction: entry.direction,
+          subject: entry.subject,
+          summary: entry.summary,
+          occurredAt: entry.occurredAt,
+        })),
+        {
+          kind: outreachKind,
+          direction: outreachDirection,
+          subject: normalizeOptionalText(outreachSubject),
+          summary: outreachSummary,
+          occurredAt: normalizeOptionalText(outreachOccurredAt) ?? new Date().toISOString(),
+        },
+      ],
+    });
+  }
+
+  function submitOutcome(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspace) {
+      return;
+    }
+
+    onUpdateWorkspace(selectedWorkspace.id, {
+      outcome: {
+        status: outcomeStatus,
+        summary: outcomeSummary,
+        recordedAt: normalizeOptionalText(outcomeRecordedAt) ?? new Date().toISOString(),
+      },
+    });
+  }
+
+  return (
+    <div style={{ display: "grid", gap: "1rem", gridTemplateColumns: "minmax(0, 0.9fr) minmax(0, 1.1fr)" }}>
+      <div style={{ display: "grid", gap: "1rem" }}>
+        <SectionCard
+          title="Tracked grants"
+          description="Open a proposal workspace from any tracked grant in the active queue."
+        >
+          {grants.length ? (
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              {grants.map((grant) => (
+                <div key={grant.id} style={subtleCardStyle}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "start" }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{grant.title}</div>
+                      <div style={{ marginTop: "0.35rem", color: "#566154", lineHeight: 1.45 }}>
+                        {grant.sponsor} · {grant.scenarioName}
+                      </div>
+                    </div>
+                    <StatusBadge label={`${grant.fitScore}/100`} tone={grant.fitScore >= 85 ? "good" : "warn"} />
+                  </div>
+                  <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+                    <StatusBadge label={grant.queueState} tone={grant.queueState === "active" ? "good" : "neutral"} />
+                    <StatusBadge label={grant.requestStatus} tone="neutral" />
+                    {grant.proposalWorkspaceId ? <StatusBadge label="Proposal linked" tone="good" /> : null}
+                  </div>
+                  <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        grant.proposalWorkspaceId
+                          ? setSelectedWorkspaceId(grant.proposalWorkspaceId)
+                          : onCreateWorkspaceFromGrant(grant.id)
+                      }
+                      style={buttonStyle(busyAction === `proposal-create-${grant.id}`)}
+                      disabled={busyAction === `proposal-create-${grant.id}`}
+                    >
+                      {grant.proposalWorkspaceId ? "Open proposal workspace" : "Create proposal workspace"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ margin: 0, color: "#566154" }}>No tracked grants are available yet.</p>
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="Proposal workspaces"
+          description="Review qualification, drafting, outreach, and outcome state from one control room."
+        >
+          {workspaces.length ? (
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              {workspaces.map((workspace) => (
+                <button
+                  key={workspace.id}
+                  type="button"
+                  onClick={() => setSelectedWorkspaceId(workspace.id)}
+                  style={{
+                    ...subtleCardStyle,
+                    border:
+                      selectedWorkspaceId === workspace.id
+                        ? "1px solid rgba(36, 84, 58, 0.3)"
+                        : "1px solid rgba(216, 204, 184, 0.95)",
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "start" }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{workspace.opportunity.title}</div>
+                      <div style={{ marginTop: "0.35rem", color: "#566154", lineHeight: 1.45 }}>
+                        {workspace.opportunity.sponsor} · {workspace.opportunity.fundingType}
+                      </div>
+                    </div>
+                    <StatusBadge label={workspace.stage} tone={workspace.stage === "submitted" ? "good" : "warn"} />
+                  </div>
+                  <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+                    {workspace.trackedGrantId ? <StatusBadge label="Tracked grant" tone="neutral" /> : <StatusBadge label="Manual" tone="neutral" />}
+                    {workspace.primaryApplicationWorkspaceId ? <StatusBadge label="Linked draft" tone="good" /> : null}
+                    {workspace.outcome ? <StatusBadge label={workspace.outcome.status} tone="neutral" /> : null}
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p style={{ margin: 0, color: "#566154" }}>Create a proposal workspace from a grant to start tracking pursuit state.</p>
+          )}
+        </SectionCard>
+      </div>
+
+      <SectionCard
+        title={selectedWorkspace ? selectedWorkspace.opportunity.title : "Proposal detail"}
+        description="Track the pursuit state, manage the sponsor contact set, and keep the linked draft aligned."
+      >
+        {selectedWorkspace ? (
+          <div style={{ display: "grid", gap: "1rem" }}>
+            <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap" }}>
+              <StatusBadge label={selectedWorkspace.stage} tone={selectedWorkspace.stage === "submitted" ? "good" : "warn"} />
+              <StatusBadge label={selectedWorkspace.opportunity.sourceType} tone="neutral" />
+              {selectedWorkspace.proposalJob ? <StatusBadge label={selectedWorkspace.proposalJob.title} tone="neutral" /> : null}
+              {selectedWorkspace.engagement ? <StatusBadge label={selectedWorkspace.engagement.status} tone="good" /> : null}
+            </div>
+
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => onCreateProposalJob(selectedWorkspace.id)}
+                style={buttonStyle(busyAction === `proposal-job-${selectedWorkspace.id}`)}
+                disabled={busyAction === `proposal-job-${selectedWorkspace.id}`}
+              >
+                Create or attach proposal job
+              </button>
+            </div>
+
+            <div style={subtleCardStyle}>
+              <strong>Opportunity</strong>
+              <p style={{ margin: "0.45rem 0 0", color: "#566154", lineHeight: 1.55 }}>
+                {selectedWorkspace.opportunity.sponsor} · {selectedWorkspace.opportunity.fundingType}
+              </p>
+              <div style={{ marginTop: "0.55rem", color: "#566154", lineHeight: 1.55 }}>{selectedWorkspace.summary || "No summary yet."}</div>
+            </div>
+
+            <div style={subtleCardStyle}>
+              <strong>Linked draft</strong>
+              {linkedApplicationWorkspace ? (
+                <div style={{ marginTop: "0.45rem", color: "#566154", lineHeight: 1.55 }}>
+                  <div>{linkedApplicationWorkspace.title}</div>
+                  <div>
+                    {linkedApplicationWorkspace.documentType} · {linkedApplicationWorkspace.state} · Updated{" "}
+                    {formatTimestamp(linkedApplicationWorkspace.updatedAt)}
+                  </div>
+                </div>
+              ) : (
+                <p style={{ margin: "0.45rem 0 0", color: "#566154" }}>No primary application workspace has been linked yet.</p>
+              )}
+            </div>
+
+            <form onSubmit={submitPlan} style={formCardStyle}>
+              <h3 style={{ margin: 0 }}>Stage and plan</h3>
+              <label>
+                <span>Stage</span>
+                <select style={inputStyle} value={stage} onChange={(event) => setStage(event.target.value as ProposalWorkspaceSummary["stage"])}>
+                  <option value="qualifying">qualifying</option>
+                  <option value="drafting">drafting</option>
+                  <option value="outreach">outreach</option>
+                  <option value="submitted">submitted</option>
+                  <option value="awarded">awarded</option>
+                  <option value="declined">declined</option>
+                  <option value="no_bid">no_bid</option>
+                </select>
+              </label>
+              <label>
+                <span>Summary</span>
+                <textarea style={textareaStyle} value={summary} onChange={(event) => setSummary(event.target.value)} />
+              </label>
+              <label>
+                <span>Next steps</span>
+                <textarea style={textareaStyle} value={nextStepsText} onChange={(event) => setNextStepsText(event.target.value)} />
+              </label>
+              <label>
+                <span>Open questions</span>
+                <textarea style={textareaStyle} value={openQuestionsText} onChange={(event) => setOpenQuestionsText(event.target.value)} />
+              </label>
+              <button style={buttonStyle(busyAction === `proposal-plan-${selectedWorkspace.id}`)} disabled={busyAction === `proposal-plan-${selectedWorkspace.id}`} type="submit">
+                Save pursuit plan
+              </button>
+            </form>
+
+            <form onSubmit={submitFeasibility} style={formCardStyle}>
+              <h3 style={{ margin: 0 }}>Feasibility review</h3>
+              <label>
+                <span>Verdict</span>
+                <input style={inputStyle} value={feasibilityVerdict} onChange={(event) => setFeasibilityVerdict(event.target.value)} />
+              </label>
+              <label>
+                <span>Confidence</span>
+                <select
+                  style={inputStyle}
+                  value={feasibilityConfidence}
+                  onChange={(event) => setFeasibilityConfidence(event.target.value as "high" | "medium" | "low")}
+                >
+                  <option value="high">high</option>
+                  <option value="medium">medium</option>
+                  <option value="low">low</option>
+                </select>
+              </label>
+              <label>
+                <span>Blockers</span>
+                <textarea
+                  style={textareaStyle}
+                  value={feasibilityBlockersText}
+                  onChange={(event) => setFeasibilityBlockersText(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Assumptions</span>
+                <textarea
+                  style={textareaStyle}
+                  value={feasibilityAssumptionsText}
+                  onChange={(event) => setFeasibilityAssumptionsText(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Required documents</span>
+                <textarea
+                  style={textareaStyle}
+                  value={feasibilityDocumentsText}
+                  onChange={(event) => setFeasibilityDocumentsText(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Recommended next step</span>
+                <textarea
+                  style={textareaStyle}
+                  value={feasibilityNextStep}
+                  onChange={(event) => setFeasibilityNextStep(event.target.value)}
+                />
+              </label>
+              <button
+                style={buttonStyle(busyAction === `proposal-feasibility-${selectedWorkspace.id}`)}
+                disabled={busyAction === `proposal-feasibility-${selectedWorkspace.id}`}
+                type="submit"
+              >
+                Save feasibility review
+              </button>
+            </form>
+
+            <div style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+              <form onSubmit={submitContact} style={formCardStyle}>
+                <h3 style={{ margin: 0 }}>Contacts</h3>
+                <label>
+                  <span>Name</span>
+                  <input style={inputStyle} value={contactName} onChange={(event) => setContactName(event.target.value)} />
+                </label>
+                <label>
+                  <span>Role title</span>
+                  <input style={inputStyle} value={contactRoleTitle} onChange={(event) => setContactRoleTitle(event.target.value)} />
+                </label>
+                <label>
+                  <span>Email</span>
+                  <input style={inputStyle} value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} />
+                </label>
+                <label>
+                  <span>Phone</span>
+                  <input style={inputStyle} value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} />
+                </label>
+                <label>
+                  <span>Organization</span>
+                  <input style={inputStyle} value={contactOrganization} onChange={(event) => setContactOrganization(event.target.value)} />
+                </label>
+                <label>
+                  <span>Notes</span>
+                  <textarea style={textareaStyle} value={contactNotes} onChange={(event) => setContactNotes(event.target.value)} />
+                </label>
+                <button
+                  style={buttonStyle(busyAction === `proposal-contact-${selectedWorkspace.id}`)}
+                  disabled={busyAction === `proposal-contact-${selectedWorkspace.id}`}
+                  type="submit"
+                >
+                  Add contact
+                </button>
+                <div style={{ display: "grid", gap: "0.55rem" }}>
+                  {selectedWorkspace.contacts.length ? (
+                    selectedWorkspace.contacts.map((contact) => (
+                      <div key={contact.id} style={subtleCardStyle}>
+                        <div style={{ fontWeight: 700 }}>{contact.name}</div>
+                        <div style={{ marginTop: "0.35rem", color: "#566154" }}>
+                          {[contact.roleTitle, contact.organization].filter(Boolean).join(" · ") || "Contact"}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p style={{ margin: 0, color: "#566154" }}>No contacts captured yet.</p>
+                  )}
+                </div>
+              </form>
+
+              <form onSubmit={submitOutreach} style={formCardStyle}>
+                <h3 style={{ margin: 0 }}>Outreach history</h3>
+                <label>
+                  <span>Kind</span>
+                  <select style={inputStyle} value={outreachKind} onChange={(event) => setOutreachKind(event.target.value as typeof outreachKind)}>
+                    <option value="email">email</option>
+                    <option value="call">call</option>
+                    <option value="meeting">meeting</option>
+                    <option value="note">note</option>
+                    <option value="other">other</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Direction</span>
+                  <select
+                    style={inputStyle}
+                    value={outreachDirection}
+                    onChange={(event) => setOutreachDirection(event.target.value as typeof outreachDirection)}
+                  >
+                    <option value="outbound">outbound</option>
+                    <option value="inbound">inbound</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Subject</span>
+                  <input style={inputStyle} value={outreachSubject} onChange={(event) => setOutreachSubject(event.target.value)} />
+                </label>
+                <label>
+                  <span>Summary</span>
+                  <textarea style={textareaStyle} value={outreachSummary} onChange={(event) => setOutreachSummary(event.target.value)} />
+                </label>
+                <label>
+                  <span>Occurred at</span>
+                  <input style={inputStyle} value={outreachOccurredAt} onChange={(event) => setOutreachOccurredAt(event.target.value)} />
+                </label>
+                <button
+                  style={buttonStyle(busyAction === `proposal-outreach-${selectedWorkspace.id}`)}
+                  disabled={busyAction === `proposal-outreach-${selectedWorkspace.id}`}
+                  type="submit"
+                >
+                  Add outreach event
+                </button>
+                <div style={{ display: "grid", gap: "0.55rem" }}>
+                  {selectedWorkspace.outreachEvents.length ? (
+                    selectedWorkspace.outreachEvents.map((event) => (
+                      <div key={event.id} style={subtleCardStyle}>
+                        <div style={{ fontWeight: 700 }}>{event.subject ?? event.kind}</div>
+                        <div style={{ marginTop: "0.35rem", color: "#566154" }}>{event.summary}</div>
+                        <div style={{ marginTop: "0.35rem", color: "#566154", fontSize: "0.92rem" }}>
+                          {event.direction} · {formatTimestamp(event.occurredAt)}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p style={{ margin: 0, color: "#566154" }}>No outreach activity recorded yet.</p>
+                  )}
+                </div>
+              </form>
+            </div>
+
+            <form onSubmit={submitOutcome} style={formCardStyle}>
+              <h3 style={{ margin: 0 }}>Outcome</h3>
+              <label>
+                <span>Status</span>
+                <select style={inputStyle} value={outcomeStatus} onChange={(event) => setOutcomeStatus(event.target.value as typeof outcomeStatus)}>
+                  <option value="submitted">submitted</option>
+                  <option value="awarded">awarded</option>
+                  <option value="declined">declined</option>
+                  <option value="no_bid">no_bid</option>
+                </select>
+              </label>
+              <label>
+                <span>Summary</span>
+                <textarea style={textareaStyle} value={outcomeSummary} onChange={(event) => setOutcomeSummary(event.target.value)} />
+              </label>
+              <label>
+                <span>Recorded at</span>
+                <input style={inputStyle} value={outcomeRecordedAt} onChange={(event) => setOutcomeRecordedAt(event.target.value)} />
+              </label>
+              <button
+                style={buttonStyle(busyAction === `proposal-outcome-${selectedWorkspace.id}`)}
+                disabled={busyAction === `proposal-outcome-${selectedWorkspace.id}`}
+                type="submit"
+              >
+                Save outcome
+              </button>
+              {selectedWorkspace.outcome ? (
+                <div style={subtleCardStyle}>
+                  <div style={{ fontWeight: 700 }}>{selectedWorkspace.outcome.status}</div>
+                  <div style={{ marginTop: "0.35rem", color: "#566154" }}>{selectedWorkspace.outcome.summary}</div>
+                </div>
+              ) : null}
+            </form>
+          </div>
+        ) : (
+          <p style={{ margin: 0, color: "#566154" }}>Pick or create a proposal workspace to inspect the pursuit state.</p>
+        )}
+      </SectionCard>
+    </div>
+  );
 }
 
 export function OrganizationWorkspaceView({
@@ -678,7 +1398,7 @@ export function CatalogWorkspaceView({
       sections: SectionDefinitionInput[];
     },
   ) => void;
-  onCreateWorkspaceFromGrant: (grantId: string, documentType: ApplicationDocumentType) => void;
+  onCreateWorkspaceFromGrant: (grantId: string) => void;
 }) {
   const selectedGrant = grants.find((grant) => grant.id === selectedGrantId) ?? null;
   const detailGrant = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.grant : selectedGrant;
@@ -810,14 +1530,14 @@ export function CatalogWorkspaceView({
               >
                 {detailGrant.isBookmarked ? "Remove bookmark" : "Bookmark grant"}
               </button>
-              <button
-                type="button"
-                onClick={() => onCreateWorkspaceFromGrant(detailGrant.id, schemaDocumentType)}
-                style={buttonStyle(busyAction === `catalog-workspace-${detailGrant.id}`)}
-                disabled={busyAction === `catalog-workspace-${detailGrant.id}`}
-              >
-                Create proposal workspace
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onCreateWorkspaceFromGrant(detailGrant.id)}
+                  style={buttonStyle(busyAction === `proposal-create-${detailGrant.id}`)}
+                  disabled={busyAction === `proposal-create-${detailGrant.id}`}
+                >
+                  Create proposal workspace
+                </button>
             </div>
 
             <form onSubmit={submitSchema} style={formCardStyle}>

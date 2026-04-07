@@ -215,6 +215,31 @@ async function acceptOrganizationInvite(
   return { response, payload } as const;
 }
 
+async function callJsonRpc(
+  app: ReturnType<typeof createApp>,
+  accessToken: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  id: string | number = "rpc-test",
+) {
+  const response = await app.request("/rpc", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method,
+      params,
+    }),
+  });
+
+  const payload = await response.json();
+  return { response, payload } as const;
+}
+
 test("docs and skill discovery routes describe Privy auth and agent tokens", async () => {
   const app = createTestApp();
 
@@ -1584,6 +1609,712 @@ test("custom templates, scoped service requests, and provider-backed generation 
     targetType: "workspace_section",
     targetId: targetedSection.id,
     specialistRole: "reviewer",
+  });
+});
+
+test("grant-backed proposal workspaces persist pursuit state and stay readable to organization collaborators", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Owner",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+  await createProfile(app, "browser_requester_two", {
+    name: "Collaborator",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000003",
+    smartWalletAddress: "0x0000000000000000000000000000000000000303",
+  });
+  await upsertOrganization(app, "browser_requester", {
+    name: "Oak Harbor Community Labs",
+    website: "https://oakharbor.example",
+    registrationCountry: "United States",
+    registrationRegion: "California",
+    organizationType: "nonprofit",
+    operatingScope: "regional",
+    localOperatingAreas: ["Oakland", "Berkeley"],
+    missionStatement: "Expand workforce access to robotics, automation, and technical training.",
+    programs: ["Robotics bootcamps", "Small business automation clinics"],
+    targetDemographics: ["low-income adults", "community college learners"],
+    thematicAreas: ["workforce development", "stem education", "economic mobility"],
+    annualOperatingBudget: "$500k-$1m",
+    strategicPriorities: ["equipment access", "employer placement", "grant readiness"],
+    emailUpdatesEnabled: true,
+    personnel: [],
+  });
+  const inviteResponse = await createOrganizationPersonnel(app, "browser_requester", {
+    fullName: "Collaborator",
+    roleTitle: "Grant Writer",
+    yearsExperience: 6,
+    email: "collaborator@oakharbor.example",
+    platformAccessEnabled: true,
+    canManageInvites: false,
+  });
+  const inviteId = inviteResponse.payload.personnel.invite.id as string;
+  const acceptResponse = await acceptOrganizationInvite(app, "browser_requester_two", inviteId);
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const grantId = runPayload.grants[0].id as string;
+
+  const createResponse = await app.request(`/api/grants/${grantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const createPayload = await createResponse.json();
+
+  const resumeResponse = await app.request(`/api/grants/${grantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const resumePayload = await resumeResponse.json();
+
+  const updateResponse = await app.request(`/api/proposal-workspaces/${createPayload.workspace.id}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      stage: "drafting",
+      summary: "Qualified the opportunity and started the first proposal draft.",
+      nextSteps: ["Draft the project narrative", "Confirm the budget assumptions"],
+      openQuestions: ["Does the sponsor require employer commitment letters?"],
+      feasibilitySnapshot: {
+        verdict: "go",
+        confidence: "high",
+        blockers: ["Need updated program metrics for the budget narrative."],
+        assumptions: ["The sponsor will accept our current nonprofit registration."],
+        requiredDocuments: ["Project budget", "Organization financials"],
+        recommendedNextStep: "Draft the narrative and collect supporting documents.",
+      },
+    }),
+  });
+
+  const collaboratorListResponse = await app.request("/api/proposal-workspaces", {
+    headers: {
+      authorization: "Bearer browser_requester_two",
+    },
+  });
+  const collaboratorDetailResponse = await app.request(`/api/proposal-workspaces/${createPayload.workspace.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester_two",
+    },
+  });
+  const collaboratorWorkspaceResponse = await app.request("/api/workspace", {
+    headers: {
+      authorization: "Bearer browser_requester_two",
+    },
+  });
+
+  expect(inviteResponse.response.status).toBe(201);
+  expect(acceptResponse.response.status).toBe(200);
+  expect(createResponse.status).toBe(201);
+  expect(createPayload.workspace).toMatchObject({
+    trackedGrantId: grantId,
+    stage: "qualifying",
+    opportunity: {
+      sourceType: "tracked_grant",
+      title: "State Automation Grant",
+      sponsor: "State Economic Development Office",
+    },
+  });
+  expect(resumeResponse.status).toBe(200);
+  expect(resumePayload.workspace.id).toBe(createPayload.workspace.id);
+  expect(updateResponse.status).toBe(200);
+  expect(await updateResponse.json()).toMatchObject({
+    workspace: {
+      id: createPayload.workspace.id,
+      stage: "drafting",
+      summary: "Qualified the opportunity and started the first proposal draft.",
+      nextSteps: ["Draft the project narrative", "Confirm the budget assumptions"],
+      openQuestions: ["Does the sponsor require employer commitment letters?"],
+      feasibilitySnapshot: {
+        verdict: "go",
+        confidence: "high",
+      },
+    },
+  });
+  expect(collaboratorListResponse.status).toBe(200);
+  expect(await collaboratorListResponse.json()).toMatchObject({
+    workspaces: [
+      expect.objectContaining({
+        id: createPayload.workspace.id,
+        trackedGrantId: grantId,
+        stage: "drafting",
+      }),
+    ],
+  });
+  expect(collaboratorDetailResponse.status).toBe(200);
+  expect(await collaboratorDetailResponse.json()).toMatchObject({
+    workspace: {
+      id: createPayload.workspace.id,
+      stage: "drafting",
+      summary: "Qualified the opportunity and started the first proposal draft.",
+      feasibilitySnapshot: {
+        blockers: ["Need updated program metrics for the budget narrative."],
+        recommendedNextStep: "Draft the narrative and collect supporting documents.",
+      },
+    },
+  });
+  expect(collaboratorWorkspaceResponse.status).toBe(200);
+  expect(await collaboratorWorkspaceResponse.json()).toMatchObject({
+    proposalWorkspaces: [
+      expect.objectContaining({
+        id: createPayload.workspace.id,
+        stage: "drafting",
+      }),
+    ],
+  });
+});
+
+test("manual proposal workspaces can be updated through JSON-RPC with feasibility, contacts, outreach, and outcome state", async () => {
+  const app = createTestApp();
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const createResponse = await app.request("/api/proposal-workspaces", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      manualOpportunity: {
+        title: "Port modernization robotics RFP",
+        sponsor: "Port Authority",
+        fundingType: "rfp",
+        amountSummary: "$250,000 fixed bid",
+        deadlineSummary: "2026-05-01",
+        geography: "United States",
+        sourceUrl: "https://example.gov/rfps/robotics",
+        notes: "Manual pursuit created without a tracked grant.",
+      },
+    }),
+  });
+  const createPayload = await createResponse.json();
+  const workspaceId = createPayload.workspace.id as string;
+
+  const updateResponse = await callJsonRpc(app, "browser_requester", "proposalWorkspaces.update", {
+    workspaceId,
+    stage: "submitted",
+    summary: "The response package is complete and has been submitted.",
+    nextSteps: ["Monitor the procurement portal", "Prepare follow-up clarifications"],
+    openQuestions: ["Will the sponsor request an interview round?"],
+    feasibilitySnapshot: {
+      verdict: "conditional_go",
+      confidence: "medium",
+      blockers: ["Pending final legal review before sponsor questions arrive."],
+      assumptions: ["The sponsor will keep the published timeline."],
+      requiredDocuments: ["Signed cost sheet", "Technical response", "Insurance certificate"],
+      recommendedNextStep: "Monitor the portal and prepare follow-up materials.",
+    },
+    contacts: [
+      {
+        name: "Dana Kim",
+        roleTitle: "Procurement lead",
+        email: "dana@example.gov",
+      },
+    ],
+    outreachEvents: [
+      {
+        kind: "email",
+        direction: "outbound",
+        subject: "Submission confirmation",
+        summary: "Sent a confirmation note after filing the response package.",
+        occurredAt: "2026-04-07T18:30:00.000Z",
+      },
+    ],
+    outcome: {
+      status: "submitted",
+      summary: "Submitted before the deadline and awaiting sponsor review.",
+      recordedAt: "2026-04-07T18:35:00.000Z",
+    },
+  });
+
+  const detailResponse = await app.request(`/api/proposal-workspaces/${workspaceId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const listResponse = await callJsonRpc(app, "browser_requester", "proposalWorkspaces.list");
+
+  expect(createResponse.status).toBe(201);
+  expect(createPayload.workspace).toMatchObject({
+    trackedGrantId: null,
+    stage: "qualifying",
+    opportunity: {
+      sourceType: "manual",
+      title: "Port modernization robotics RFP",
+      sponsor: "Port Authority",
+    },
+  });
+  expect(updateResponse.response.status).toBe(200);
+  expect(updateResponse.payload).toMatchObject({
+    result: {
+      workspace: {
+        id: workspaceId,
+        stage: "submitted",
+        summary: "The response package is complete and has been submitted.",
+        contacts: [
+          expect.objectContaining({
+            name: "Dana Kim",
+            roleTitle: "Procurement lead",
+          }),
+        ],
+        outreachEvents: [
+          expect.objectContaining({
+            subject: "Submission confirmation",
+            direction: "outbound",
+          }),
+        ],
+        outcome: {
+          status: "submitted",
+          summary: "Submitted before the deadline and awaiting sponsor review.",
+        },
+      },
+    },
+  });
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    workspace: {
+      id: workspaceId,
+      feasibilitySnapshot: {
+        verdict: "conditional_go",
+        confidence: "medium",
+        requiredDocuments: ["Signed cost sheet", "Technical response", "Insurance certificate"],
+      },
+      contacts: [
+        expect.objectContaining({
+          email: "dana@example.gov",
+        }),
+      ],
+      outreachEvents: [
+        expect.objectContaining({
+          occurredAt: "2026-04-07T18:30:00.000Z",
+        }),
+      ],
+      outcome: {
+        status: "submitted",
+        recordedAt: "2026-04-07T18:35:00.000Z",
+      },
+    },
+  });
+  expect(listResponse.response.status).toBe(200);
+  expect(listResponse.payload).toMatchObject({
+    result: {
+      workspaces: [
+        expect.objectContaining({
+          id: workspaceId,
+          stage: "submitted",
+        }),
+      ],
+    },
+  });
+});
+
+test("proposal workspaces persist across app instances that share the same database", async () => {
+  const database = createTestDatabase();
+  const authProvider = new StaticAuthProvider({
+    browser_requester: { privyUserId: "did:privy:requester" },
+  });
+  const firstApp = createApp({
+    persist: true,
+    database,
+    authProvider,
+  });
+
+  await createProfile(firstApp, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const createResponse = await firstApp.request("/api/proposal-workspaces", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      manualOpportunity: {
+        title: "State logistics innovation RFP",
+        sponsor: "State Logistics Office",
+        fundingType: "rfp",
+      },
+    }),
+  });
+  const createPayload = await createResponse.json();
+
+  const secondApp = createApp({
+    persist: true,
+    database,
+    authProvider,
+  });
+
+  const detailResponse = await secondApp.request(`/api/proposal-workspaces/${createPayload.workspace.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const workspaceResponse = await secondApp.request("/api/workspace", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(createResponse.status).toBe(201);
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    workspace: {
+      id: createPayload.workspace.id,
+      opportunity: {
+        title: "State logistics innovation RFP",
+        sponsor: "State Logistics Office",
+      },
+    },
+  });
+  expect(workspaceResponse.status).toBe(200);
+  expect(await workspaceResponse.json()).toMatchObject({
+    proposalWorkspaces: [
+      expect.objectContaining({
+        id: createPayload.workspace.id,
+        opportunity: expect.objectContaining({
+          title: "State logistics innovation RFP",
+        }),
+      }),
+    ],
+  });
+});
+
+test("proposal workspaces link a primary draft and record provider-backed actions against the proposal artifact", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Public works robotics",
+      summary: "A public agency wants a robotics proposal with a linked draft workspace.",
+      geography: "United States",
+      businessModel: "Government",
+      customers: ["public agencies"],
+      needs: ["proposal drafting", "outreach planning"],
+      tags: ["public-works", "robotics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const grantId = runPayload.grants[0].id as string;
+
+  const createResponse = await app.request(`/api/grants/${grantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const createPayload = await createResponse.json();
+
+  const providerResponse = await app.request("/api/provider-connections", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scope: "user",
+      provider: "openai",
+      label: "Proposal actions",
+      authType: "byok",
+      allowedArtifactTypes: ["proposal_workspace"],
+    }),
+  });
+  const providerPayload = await providerResponse.json();
+
+  const actionResponse = await callJsonRpc(app, "browser_requester", "proposalWorkspaces.runAction", {
+    workspaceId: createPayload.workspace.id,
+    action: "refresh_draft",
+    providerConnectionId: providerPayload.connection.id,
+  });
+
+  const detailResponse = await app.request(`/api/proposal-workspaces/${createPayload.workspace.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const executionResponse = await app.request("/api/agent-executions", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(createResponse.status).toBe(201);
+  expect(createPayload.workspace).toMatchObject({
+    trackedGrantId: grantId,
+    primaryApplicationWorkspace: expect.objectContaining({
+      state: "draft",
+      title: expect.stringContaining("Proposal"),
+    }),
+  });
+  expect(actionResponse.response.status).toBe(200);
+  expect(actionResponse.payload).toMatchObject({
+    result: {
+      workspace: {
+        id: createPayload.workspace.id,
+        primaryApplicationWorkspace: expect.objectContaining({
+          state: "draft",
+          updatedAt: expect.any(String),
+        }),
+      },
+    },
+  });
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    workspace: {
+      id: createPayload.workspace.id,
+      primaryApplicationWorkspace: expect.objectContaining({
+        state: "draft",
+      }),
+    },
+  });
+  expect(executionResponse.status).toBe(200);
+  expect(await executionResponse.json()).toMatchObject({
+    executions: [
+      expect.objectContaining({
+        providerConnectionId: providerPayload.connection.id,
+        targetType: "proposal_workspace",
+        targetId: createPayload.workspace.id,
+        action: "refresh_draft",
+      }),
+    ],
+  });
+});
+
+test("proposal workspaces can create marketplace jobs and keep accepted engagements visible", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+  await createProfile(app, "browser_specialist", {
+    name: "Specialist",
+    role: "specialist",
+    walletAddress: "0x0000000000000000000000000000000000000002",
+    smartWalletAddress: "0x0000000000000000000000000000000000000202",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Municipal robotics",
+      summary: "A city agency wants a grant proposal workspace with marketplace collaboration.",
+      geography: "United States",
+      businessModel: "Government",
+      customers: ["public agencies"],
+      needs: ["proposal drafting", "specialist collaboration"],
+      tags: ["municipal", "robotics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const grantId = runPayload.grants[0].id as string;
+
+  const createWorkspaceResponse = await app.request(`/api/grants/${grantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const createWorkspacePayload = await createWorkspaceResponse.json();
+
+  const firstJobResponse = await app.request(`/api/proposal-workspaces/${createWorkspacePayload.workspace.id}/proposal-job`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const firstJobPayload = await firstJobResponse.json();
+
+  const secondJobResponse = await app.request(`/api/proposal-workspaces/${createWorkspacePayload.workspace.id}/proposal-job`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const secondJobPayload = await secondJobResponse.json();
+
+  const offerResponse = await app.request(`/api/jobs/${firstJobPayload.job.id}/offers`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_specialist",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "I can help draft the proposal and coordinate the submission.",
+      amountUsd: "2500",
+      payoutAddress: "0x0000000000000000000000000000000000000abc",
+    }),
+  });
+  const offerPayload = await offerResponse.json();
+
+  const acceptResponse = await app.request(`/api/offers/${offerPayload.offer.id}/accept`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const acceptPayload = await acceptResponse.json();
+
+  const detailResponse = await app.request(`/api/proposal-workspaces/${createWorkspacePayload.workspace.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const detailPayload = await detailResponse.json();
+
+  expect(firstJobResponse.status).toBe(201);
+  expect(firstJobPayload).toMatchObject({
+    job: {
+      type: "grant_proposal",
+      grantId,
+      targetType: "proposal_workspace",
+      targetId: createWorkspacePayload.workspace.id,
+    },
+    workspace: expect.objectContaining({
+      id: createWorkspacePayload.workspace.id,
+      proposalJob: expect.objectContaining({
+        id: firstJobPayload.job.id,
+      }),
+    }),
+  });
+  expect(secondJobResponse.status).toBe(201);
+  expect(secondJobPayload.job.id).toBe(firstJobPayload.job.id);
+  expect(offerResponse.status).toBe(201);
+  expect(acceptResponse.status).toBe(200);
+  expect(acceptPayload.engagement).toMatchObject({
+    targetType: "proposal_workspace",
+    targetId: createWorkspacePayload.workspace.id,
+    status: "pending_funding",
+  });
+  expect(detailResponse.status).toBe(200);
+  expect(detailPayload).toMatchObject({
+    workspace: {
+      id: createWorkspacePayload.workspace.id,
+      proposalJob: expect.objectContaining({
+        id: firstJobPayload.job.id,
+      }),
+      engagement: expect.objectContaining({
+        status: "pending_funding",
+      }),
+    },
   });
 });
 

@@ -21,7 +21,24 @@ export type ResearchRequestStatus = "draft" | "running" | "completed" | "failed"
 export type GrantQueueState = "active" | "inactive";
 export type GrantCatalogSourceType = "promoted" | "curated";
 export type ApplicationWorkspaceState = "draft" | "proposal";
-export type ServiceTargetType = "grant_catalog_entry" | "application_workspace" | "workspace_section";
+export type ProposalWorkspaceStage =
+  | "qualifying"
+  | "drafting"
+  | "outreach"
+  | "submitted"
+  | "awarded"
+  | "declined"
+  | "no_bid";
+export type ProposalOpportunitySourceType = "tracked_grant" | "manual";
+export type ProposalFeasibilityConfidence = "high" | "medium" | "low";
+export type ProposalOutcomeStatus = "submitted" | "awarded" | "declined" | "no_bid";
+export type ProposalOutreachKind = "email" | "call" | "meeting" | "note" | "other";
+export type ProposalOutreachDirection = "outbound" | "inbound";
+export type ServiceTargetType =
+  | "grant_catalog_entry"
+  | "application_workspace"
+  | "workspace_section"
+  | "proposal_workspace";
 export type SpecialistServiceRole = "researcher" | "writer" | "reviewer" | "submission_specialist";
 export type AgentProviderConnectionScope = "user" | "organization";
 export type AgentProviderAuthType = "byok" | "oauth";
@@ -232,6 +249,7 @@ export interface PlatformTrackedGrant {
   citations: string[];
   nextActions: string[];
   queueState: GrantQueueState;
+  proposalWorkspaceId: string | null;
   proposalJobId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -338,6 +356,77 @@ export interface PlatformApplicationWorkspace {
   finalizedAt: string | null;
 }
 
+export interface PlatformProposalOpportunity {
+  sourceType: ProposalOpportunitySourceType;
+  title: string;
+  sponsor: string;
+  fundingType: string;
+  amountSummary: string | null;
+  deadlineSummary: string | null;
+  geography: string | null;
+  sourceUrl: string | null;
+  notes: string | null;
+}
+
+export interface PlatformProposalFeasibilitySnapshot {
+  verdict: string;
+  confidence: ProposalFeasibilityConfidence;
+  blockers: string[];
+  assumptions: string[];
+  requiredDocuments: string[];
+  recommendedNextStep: string;
+  updatedAt: string;
+}
+
+export interface PlatformProposalContact {
+  id: string;
+  name: string;
+  roleTitle: string | null;
+  email: string | null;
+  phone: string | null;
+  organization: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformProposalOutreachEvent {
+  id: string;
+  kind: ProposalOutreachKind;
+  direction: ProposalOutreachDirection;
+  subject: string | null;
+  summary: string;
+  occurredAt: string;
+  createdAt: string;
+}
+
+export interface PlatformProposalOutcome {
+  status: ProposalOutcomeStatus;
+  summary: string;
+  recordedAt: string;
+}
+
+export interface PlatformProposalWorkspace {
+  id: string;
+  ownerUserId: string;
+  organizationId: string | null;
+  trackedGrantId: string | null;
+  opportunity: PlatformProposalOpportunity;
+  stage: ProposalWorkspaceStage;
+  summary: string;
+  nextSteps: string[];
+  openQuestions: string[];
+  primaryApplicationWorkspaceId: string | null;
+  feasibilitySnapshot: PlatformProposalFeasibilitySnapshot | null;
+  contacts: PlatformProposalContact[];
+  outreachEvents: PlatformProposalOutreachEvent[];
+  outcome: PlatformProposalOutcome | null;
+  proposalJobId: string | null;
+  engagementId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PlatformAgentProviderConnection {
   id: string;
   scope: AgentProviderConnectionScope;
@@ -378,6 +467,7 @@ export interface PlatformState {
   grantApplicationSchemas: PlatformGrantApplicationSchema[];
   applicationTemplates: PlatformApplicationTemplate[];
   applicationWorkspaces: PlatformApplicationWorkspace[];
+  proposalWorkspaces: PlatformProposalWorkspace[];
   agentProviderConnections: PlatformAgentProviderConnection[];
   agentExecutionRecords: PlatformAgentExecutionRecord[];
 }
@@ -426,6 +516,7 @@ export function createEmptyPlatformState(): PlatformState {
     grantApplicationSchemas: [],
     applicationTemplates: [],
     applicationWorkspaces: [],
+    proposalWorkspaces: [],
     agentProviderConnections: [],
     agentExecutionRecords: [],
   };
