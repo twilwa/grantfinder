@@ -55,9 +55,10 @@ const organization = {
 const catalogGrant = {
   id: "catalog-1",
   createdByUserId: "user-1",
-  sourceType: "report",
+  sourceType: "research",
   sourceGrantId: null,
   sourceReportId: "report-1",
+  lastResearchRequestId: "research-request-1",
   title: "State Automation Grant",
   sponsor: "State Economic Development Office",
   fundingType: "grant",
@@ -71,9 +72,72 @@ const catalogGrant = {
   citations: ["https://example.gov/grants/automation"],
   nextActions: ["Prepare operating metrics and project budget."],
   tags: ["automation", "workforce"],
+  provenanceNotes: "Promoted from the latest research brief.",
+  freshnessNotes: "Validated after the March 2026 sponsor update.",
+  pursuitNotes: "Move this into a proposal workspace once the LOI outline is ready.",
+  lastValidatedAt: "2026-03-24T12:31:00.000Z",
   isBookmarked: true,
   createdAt: "2026-03-24T12:20:00.000Z",
   updatedAt: "2026-03-24T12:30:00.000Z",
+} as const;
+
+const catalogLatestReport = {
+  id: "report-1",
+  requestId: "request-1",
+  requesterId: "user-1",
+  businessCaseId: "business-case-1",
+  executiveSummary: "The sponsor is a good match for automation capacity-building work.",
+  searchSummary: "Three relevant opportunities were reviewed and one was promoted.",
+  opportunityCount: 1,
+  opportunities: [{ title: "State Automation Grant" }],
+  rejectedLeads: [{ title: "Local operations grant" }],
+  nextActions: ["Draft the first proposal outline."],
+  createdAt: "2026-03-24T12:28:00.000Z",
+  updatedAt: "2026-03-24T12:29:00.000Z",
+} as const;
+
+const catalogResearchRequest = {
+  id: "research-request-1",
+  requesterId: "user-1",
+  scenarioId: "scenario-1",
+  sourceCatalogGrantId: "catalog-1",
+  researchFocus: "Check the sponsor's current funding window and eligibility details.",
+  organizationPrefill: null,
+  status: "completed" as const,
+  runPhase: "completed" as const,
+  progressSummary: "Research completed and the grant was promoted into the catalog.",
+  runStartedAt: "2026-03-24T12:22:00.000Z",
+  latestBrief: null,
+  latestReport: {
+    executiveSummary: "The grant is still a strong fit.",
+    searchSummary: "Sponsor guidance confirms the program is active.",
+    opportunities: [{ title: "State Automation Grant" }],
+  },
+  errorMessage: null,
+  activity: [
+    {
+      id: "activity-1",
+      kind: "status" as const,
+      title: "Completed",
+      detail: "The research run reached the publishing phase.",
+      tone: "good" as const,
+      timestamp: "2026-03-24T12:27:00.000Z",
+    },
+  ],
+  steeringNotes: [
+    {
+      id: "steering-1",
+      prompt: "Verify the current deadline and sponsor contact details.",
+      status: "applied" as const,
+      createdAt: "2026-03-24T12:23:00.000Z",
+      appliedAt: "2026-03-24T12:24:00.000Z",
+    },
+  ],
+  createdAt: "2026-03-24T12:21:00.000Z",
+  updatedAt: "2026-03-24T12:27:00.000Z",
+  lastRunAt: "2026-03-24T12:27:00.000Z",
+  grantCount: 1,
+  activeGrantCount: 1,
 } as const;
 
 const schema = {
@@ -188,8 +252,9 @@ const proposalWorkspace = {
   ownerUserId: "user-1",
   organizationId: "organization-1",
   trackedGrantId: "grant-1",
+  catalogGrantId: "catalog-1",
   opportunity: {
-    sourceType: "tracked_grant" as const,
+    sourceType: "catalog_grant" as const,
     title: "State Automation Grant",
     sponsor: "State Economic Development Office",
     fundingType: "grant",
@@ -256,6 +321,7 @@ const proposalWorkspace = {
     title: "Grant proposal for State Automation Grant",
     status: "open",
     offerCount: 1,
+    catalogGrantId: "catalog-1",
   },
   engagementId: "engagement-1",
   engagement: {
@@ -263,6 +329,7 @@ const proposalWorkspace = {
     status: "funded",
     amountUsd: "2500.00",
     specialistName: "Jordan Lee",
+    catalogGrantId: "catalog-1",
   },
   createdAt: "2026-03-24T13:00:00.000Z",
   updatedAt: "2026-03-24T13:30:00.000Z",
@@ -272,6 +339,7 @@ const proposalGrant = {
   id: "grant-1",
   requestId: "request-1",
   requesterId: "user-1",
+  catalogGrantId: "catalog-1",
   title: "State Automation Grant",
   sponsor: "State Economic Development Office",
   fundingType: "grant",
@@ -304,6 +372,11 @@ const providerConnection = {
   allowedArtifactTypes: ["workspace_section"] as const,
   createdAt: "2026-03-24T12:50:00.000Z",
   updatedAt: "2026-03-24T12:50:00.000Z",
+};
+
+const providerConnectionWithProposalWorkspace = {
+  ...providerConnection,
+  allowedArtifactTypes: ["workspace_section", "proposal_workspace"] as const,
 };
 
 const execution = {
@@ -340,24 +413,44 @@ test("CatalogWorkspaceView renders the grant detail and schema controls", () => 
     <CatalogWorkspaceView
       grants={[catalogGrant]}
       selectedGrantId={catalogGrant.id}
-      selectedGrantDetail={{ grant: catalogGrant, schema }}
+      selectedGrantDetail={{
+        grant: catalogGrant,
+        schema,
+        latestReport: catalogLatestReport,
+        researchRequests: [catalogResearchRequest],
+        proposalWorkspace,
+        proposalJob: proposalWorkspace.proposalJob,
+        engagement: proposalWorkspace.engagement,
+      }}
       busyAction={null}
       onSelectGrant={() => undefined}
       onToggleBookmark={() => undefined}
+      onSaveGrant={() => undefined}
+      onStartResearch={() => undefined}
       onSaveSchema={() => undefined}
-      onCreateWorkspaceFromGrant={() => undefined}
+      onCreateProposalWorkspace={() => undefined}
+      onCreateProposalJob={() => undefined}
     />,
   );
 
   expect(markup).toContain("Grant catalog");
   expect(markup).toContain("State Automation Grant");
+  expect(markup).toContain("Enrichment");
+  expect(markup).toContain("Follow-up research");
+  expect(markup).toContain("Latest report");
+  expect(markup).toContain("Research history");
+  expect(markup).toContain("Linked proposal workspace");
+  expect(markup).toContain("Linked proposal job");
+  expect(markup).toContain("Linked engagement");
   expect(markup).toContain("Application schema");
-  expect(markup).toContain("Create proposal workspace");
+  expect(markup).toContain("Review promoted opportunities, bookmark the best fits, and attach a structured application schema.");
+  expect(markup).toContain("Open proposal workspace");
 });
 
 test("ApplicationWorkspaceView renders templates and workspaces", () => {
   const markup = renderToStaticMarkup(
     <ApplicationWorkspaceView
+      catalogGrants={[catalogGrant]}
       templates={[template]}
       workspaces={[workspace]}
       providerConnections={[providerConnection]}
@@ -372,6 +465,9 @@ test("ApplicationWorkspaceView renders templates and workspaces", () => {
 
   expect(markup).toContain("Reusable templates");
   expect(markup).toContain("New workspace");
+  expect(markup).toContain("Create workspace");
+  expect(markup).toContain("Launch a working draft from a saved template or start from an empty document type.");
+  expect(markup).toContain("Catalog-backed source");
   expect(markup).toContain("LOI starter");
   expect(markup).toContain("State Automation Grant proposal");
 });
@@ -382,10 +478,12 @@ test("ProposalWorkspaceView renders the proposal control room and linked pursuit
       grants={[proposalGrant]}
       workspaces={[proposalWorkspace]}
       applicationWorkspaces={[proposalApplicationWorkspace]}
+      providerConnections={[providerConnectionWithProposalWorkspace]}
       busyAction={null}
       onCreateWorkspaceFromGrant={() => undefined}
       onCreateProposalJob={() => undefined}
       onUpdateWorkspace={() => undefined}
+      onRunWorkspaceAction={() => undefined}
     />,
   );
 
@@ -398,13 +496,15 @@ test("ProposalWorkspaceView renders the proposal control room and linked pursuit
   expect(markup).toContain("Outcome");
   expect(markup).toContain("State Automation Grant proposal draft");
   expect(markup).toContain("Create or attach proposal job");
+  expect(markup).toContain("Automation");
+  expect(markup).toContain("Evaluate feasibility");
 });
 
 test("ProviderWorkspaceView renders provider connections and execution history", () => {
   const markup = renderToStaticMarkup(
     <ProviderWorkspaceView
       organization={organization}
-      connections={[providerConnection]}
+      connections={[providerConnectionWithProposalWorkspace]}
       executions={[execution]}
       busyAction={null}
       onCreateConnection={() => undefined}
@@ -415,4 +515,5 @@ test("ProviderWorkspaceView renders provider connections and execution history",
   expect(markup).toContain("Execution history");
   expect(markup).toContain("Team OpenAI");
   expect(markup).toContain("generate_section");
+  expect(markup).toContain("Proposal workspace");
 });

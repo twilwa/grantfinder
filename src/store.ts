@@ -263,6 +263,7 @@ function toJob(row: Record<string, unknown>): PlatformJob {
     requesterId: String(row.requester_id),
     type: row.type === "grant_proposal" ? "grant_proposal" : "general",
     grantId: row.grant_id ? String(row.grant_id) : null,
+    catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
     targetType:
       row.target_type === "application_workspace"
         ? "application_workspace"
@@ -391,6 +392,8 @@ function toResearchRequest(row: Record<string, unknown>): PlatformResearchReques
     id: String(row.id),
     requesterId: String(row.requester_id),
     scenarioId: String(row.scenario_id),
+    sourceCatalogGrantId: row.source_catalog_grant_id ? String(row.source_catalog_grant_id) : null,
+    researchFocus: row.research_focus ? String(row.research_focus) : null,
     organizationPrefill: toOrganizationPrefill(row.organization_prefill_json),
     status:
       row.status === "running"
@@ -434,6 +437,7 @@ function toTrackedGrant(row: Record<string, unknown>): PlatformTrackedGrant {
     id: String(row.id),
     requestId: String(row.request_id),
     requesterId: String(row.requester_id),
+    catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
     title: String(row.title),
     sponsor: String(row.sponsor),
     fundingType: String(row.funding_type),
@@ -475,11 +479,15 @@ function toGrantCatalogEntry(row: Record<string, unknown>): PlatformGrantCatalog
     id: String(row.id),
     createdByUserId: String(row.created_by_user_id),
     sourceType:
+      row.source_type === "research"
+        ? "research"
+        :
       row.source_type === "curated"
         ? "curated"
         : "promoted",
     sourceGrantId: row.source_grant_id ? String(row.source_grant_id) : null,
     sourceReportId: row.source_report_id ? String(row.source_report_id) : null,
+    lastResearchRequestId: row.last_research_request_id ? String(row.last_research_request_id) : null,
     title: String(row.title),
     sponsor: String(row.sponsor),
     fundingType: String(row.funding_type),
@@ -493,6 +501,10 @@ function toGrantCatalogEntry(row: Record<string, unknown>): PlatformGrantCatalog
     citations: parseJsonText<string[]>(row.citations_json, []),
     nextActions: parseJsonText<string[]>(row.next_actions_json, []),
     tags: parseJsonText<string[]>(row.tags_json, []),
+    provenanceNotes: row.provenance_notes ? String(row.provenance_notes) : null,
+    freshnessNotes: row.freshness_notes ? String(row.freshness_notes) : null,
+    pursuitNotes: row.pursuit_notes ? String(row.pursuit_notes) : null,
+    lastValidatedAt: row.last_validated_at ? String(row.last_validated_at) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -572,7 +584,12 @@ function toApplicationWorkspace(row: Record<string, unknown>): PlatformApplicati
 function toProposalOpportunity(value: unknown): PlatformProposalOpportunity {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   return {
-    sourceType: record.sourceType === "manual" ? "manual" : "tracked_grant",
+    sourceType:
+      record.sourceType === "manual"
+        ? "manual"
+        : record.sourceType === "catalog_grant"
+          ? "catalog_grant"
+          : "tracked_grant",
     title: typeof record.title === "string" ? record.title : "",
     sponsor: typeof record.sponsor === "string" ? record.sponsor : "",
     fundingType: typeof record.fundingType === "string" ? record.fundingType : "",
@@ -680,6 +697,7 @@ function toProposalWorkspace(row: Record<string, unknown>): PlatformProposalWork
     ownerUserId: String(row.owner_user_id),
     organizationId: row.organization_id ? String(row.organization_id) : null,
     trackedGrantId: row.tracked_grant_id ? String(row.tracked_grant_id) : null,
+    catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
     opportunity: toProposalOpportunity(parseJsonText(row.opportunity_json, null)),
     stage:
       row.stage === "drafting"
@@ -907,6 +925,17 @@ class MemoryStore {
     return structuredClone(job);
   }
 
+  async saveJob(job: PlatformJob): Promise<PlatformJob> {
+    const index = this.state.jobs.findIndex((candidate) => candidate.id === job.id);
+    if (index === -1) {
+      this.state.jobs.push(structuredClone(job));
+      return structuredClone(job);
+    }
+
+    this.state.jobs[index] = structuredClone(job);
+    return structuredClone(job);
+  }
+
   async findJobById(jobId: string): Promise<PlatformJob | null> {
     return this.state.jobs.find((job) => job.id === jobId) ?? null;
   }
@@ -946,10 +975,10 @@ class MemoryStore {
       }
     }
 
-    const engagement: PlatformEngagement = {
-      id: makeId("engagement"),
-      jobId: job.id,
-      offerId: offer.id,
+      const engagement: PlatformEngagement = {
+        id: makeId("engagement"),
+        jobId: job.id,
+        offerId: offer.id,
       requesterId,
       specialistId: offer.specialistId,
       targetType: job.targetType,
@@ -1492,6 +1521,7 @@ class PostgresStore {
         requester_id,
         type,
         grant_id,
+        catalog_grant_id,
         target_type,
         target_id,
         specialist_role,
@@ -1501,13 +1531,14 @@ class PostgresStore {
         status,
         created_at
       )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        returning *`,
       [
         job.id,
         job.requesterId,
         job.type,
         job.grantId,
+        job.catalogGrantId,
         job.targetType,
         job.targetId,
         job.specialistRole,
@@ -1519,6 +1550,43 @@ class PostgresStore {
       ],
     );
 
+    return toJob(result.rows[0] as Record<string, unknown>);
+  }
+
+  async saveJob(job: PlatformJob): Promise<PlatformJob> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `update jobs
+       set requester_id = $2,
+           type = $3,
+           grant_id = $4,
+           catalog_grant_id = $5,
+           target_type = $6,
+           target_id = $7,
+           specialist_role = $8,
+           title = $9,
+           description = $10,
+           funding_need = $11,
+           status = $12,
+           created_at = $13
+       where id = $1
+       returning *`,
+      [
+        job.id,
+        job.requesterId,
+        job.type,
+        job.grantId,
+        job.catalogGrantId,
+        job.targetType,
+        job.targetId,
+        job.specialistRole,
+        job.title,
+        job.description,
+        job.fundingNeed,
+        job.status,
+        job.createdAt,
+      ],
+    );
     return toJob(result.rows[0] as Record<string, unknown>);
   }
 
@@ -1774,6 +1842,8 @@ class PostgresStore {
         id,
         requester_id,
         scenario_id,
+        source_catalog_grant_id,
+        research_focus,
         organization_prefill_json,
         status,
         run_phase,
@@ -1787,12 +1857,14 @@ class PostgresStore {
         created_at,
         updated_at,
         last_run_at
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       returning *`,
       [
         request.id,
         request.requesterId,
         request.scenarioId,
+        request.sourceCatalogGrantId,
+        request.researchFocus,
         request.organizationPrefill ? JSON.stringify(request.organizationPrefill) : null,
         request.status,
         request.runPhase,
@@ -1826,23 +1898,27 @@ class PostgresStore {
     const result = await this.database.query(
       `update research_requests
        set scenario_id = $2,
-           organization_prefill_json = $3,
-           status = $4,
-           run_phase = $5,
-           progress_summary = $6,
-           run_started_at = $7,
-           brief_json = $8,
-           report_json = $9,
-           error_message = $10,
-           activity_json = $11,
-           steering_json = $12,
-           updated_at = $13,
-           last_run_at = $14
+           source_catalog_grant_id = $3,
+           research_focus = $4,
+           organization_prefill_json = $5,
+           status = $6,
+           run_phase = $7,
+           progress_summary = $8,
+           run_started_at = $9,
+           brief_json = $10,
+           report_json = $11,
+           error_message = $12,
+           activity_json = $13,
+           steering_json = $14,
+           updated_at = $15,
+           last_run_at = $16
        where id = $1
        returning *`,
       [
         request.id,
         request.scenarioId,
+        request.sourceCatalogGrantId,
+        request.researchFocus,
         request.organizationPrefill ? JSON.stringify(request.organizationPrefill) : null,
         request.status,
         request.runPhase,
@@ -1877,6 +1953,7 @@ class PostgresStore {
             id,
             request_id,
             requester_id,
+            catalog_grant_id,
             title,
             sponsor,
             funding_type,
@@ -1896,12 +1973,14 @@ class PostgresStore {
             updated_at
           ) values (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21
           )`,
           [
             grant.id,
             grant.requestId,
             grant.requesterId,
+            grant.catalogGrantId,
             grant.title,
             grant.sponsor,
             grant.fundingType,
@@ -1946,13 +2025,21 @@ class PostgresStore {
     await this.ensureSchema();
     const result = await this.database.query(
       `update tracked_grants
-       set queue_state = $2,
-           proposal_workspace_id = $3,
-           proposal_job_id = $4,
-           updated_at = $5
+       set catalog_grant_id = $2,
+           queue_state = $3,
+           proposal_workspace_id = $4,
+           proposal_job_id = $5,
+           updated_at = $6
        where id = $1
        returning *`,
-      [grant.id, grant.queueState, grant.proposalWorkspaceId, grant.proposalJobId, grant.updatedAt],
+      [
+        grant.id,
+        grant.catalogGrantId,
+        grant.queueState,
+        grant.proposalWorkspaceId,
+        grant.proposalJobId,
+        grant.updatedAt,
+      ],
     );
     return toTrackedGrant(result.rows[0] as Record<string, unknown>);
   }
@@ -2039,6 +2126,7 @@ class PostgresStore {
         source_type,
         source_grant_id,
         source_report_id,
+        last_research_request_id,
         title,
         sponsor,
         funding_type,
@@ -2052,11 +2140,16 @@ class PostgresStore {
         citations_json,
         next_actions_json,
         tags_json,
+        provenance_notes,
+        freshness_notes,
+        pursuit_notes,
+        last_validated_at,
         created_at,
         updated_at
       ) values (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+        $21, $22, $23, $24, $25
       )
       on conflict (id)
       do update set
@@ -2064,6 +2157,7 @@ class PostgresStore {
         source_type = excluded.source_type,
         source_grant_id = excluded.source_grant_id,
         source_report_id = excluded.source_report_id,
+        last_research_request_id = excluded.last_research_request_id,
         title = excluded.title,
         sponsor = excluded.sponsor,
         funding_type = excluded.funding_type,
@@ -2077,6 +2171,10 @@ class PostgresStore {
         citations_json = excluded.citations_json,
         next_actions_json = excluded.next_actions_json,
         tags_json = excluded.tags_json,
+        provenance_notes = excluded.provenance_notes,
+        freshness_notes = excluded.freshness_notes,
+        pursuit_notes = excluded.pursuit_notes,
+        last_validated_at = excluded.last_validated_at,
         updated_at = excluded.updated_at
       returning *`,
       [
@@ -2085,6 +2183,7 @@ class PostgresStore {
         grant.sourceType,
         grant.sourceGrantId,
         grant.sourceReportId,
+        grant.lastResearchRequestId,
         grant.title,
         grant.sponsor,
         grant.fundingType,
@@ -2098,6 +2197,10 @@ class PostgresStore {
         JSON.stringify(grant.citations),
         JSON.stringify(grant.nextActions),
         JSON.stringify(grant.tags),
+        grant.provenanceNotes,
+        grant.freshnessNotes,
+        grant.pursuitNotes,
+        grant.lastValidatedAt,
         grant.createdAt,
         grant.updatedAt,
       ],
@@ -2289,6 +2392,7 @@ class PostgresStore {
         owner_user_id,
         organization_id,
         tracked_grant_id,
+        catalog_grant_id,
         opportunity_json,
         stage,
         summary,
@@ -2304,8 +2408,8 @@ class PostgresStore {
         created_at,
         updated_at
       ) values (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14, $15, $16, $17, $18
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18, $19
       )
       returning *`,
       [
@@ -2313,6 +2417,7 @@ class PostgresStore {
         workspace.ownerUserId,
         workspace.organizationId,
         workspace.trackedGrantId,
+        workspace.catalogGrantId,
         JSON.stringify(workspace.opportunity),
         workspace.stage,
         workspace.summary,
@@ -2356,25 +2461,27 @@ class PostgresStore {
       `update proposal_workspaces
        set organization_id = $2,
            tracked_grant_id = $3,
-           opportunity_json = $4,
-           stage = $5,
-           summary = $6,
-           next_steps_json = $7,
-           open_questions_json = $8,
-           primary_application_workspace_id = $9,
-           feasibility_snapshot_json = $10,
-           contacts_json = $11,
-           outreach_events_json = $12,
-           outcome_json = $13,
-           proposal_job_id = $14,
-           engagement_id = $15,
-           updated_at = $16
+           catalog_grant_id = $4,
+           opportunity_json = $5,
+           stage = $6,
+           summary = $7,
+           next_steps_json = $8,
+           open_questions_json = $9,
+           primary_application_workspace_id = $10,
+           feasibility_snapshot_json = $11,
+           contacts_json = $12,
+           outreach_events_json = $13,
+           outcome_json = $14,
+           proposal_job_id = $15,
+           engagement_id = $16,
+           updated_at = $17
        where id = $1
        returning *`,
       [
         workspace.id,
         workspace.organizationId,
         workspace.trackedGrantId,
+        workspace.catalogGrantId,
         JSON.stringify(workspace.opportunity),
         workspace.stage,
         workspace.summary,
@@ -2527,6 +2634,7 @@ class PostgresStore {
         requester_id text not null references users (id) on delete cascade,
         type text not null default 'general' check (type in ('general', 'grant_proposal')),
         grant_id text,
+        catalog_grant_id text,
         target_type text,
         target_id text,
         specialist_role text,
@@ -2542,6 +2650,9 @@ class PostgresStore {
     `);
     await this.database.query(`
       alter table jobs add column if not exists grant_id text
+    `);
+    await this.database.query(`
+      alter table jobs add column if not exists catalog_grant_id text
     `);
     await this.database.query(`
       alter table jobs add column if not exists target_type text
@@ -2629,6 +2740,8 @@ class PostgresStore {
         id text primary key,
         requester_id text not null references users (id) on delete cascade,
         scenario_id text not null,
+        source_catalog_grant_id text,
+        research_focus text,
         organization_prefill_json text,
         status text not null check (status in ('draft', 'running', 'completed', 'failed')),
         run_phase text not null default 'idle',
@@ -2662,6 +2775,9 @@ class PostgresStore {
     `);
     await this.database.query(`
       alter table research_requests add column if not exists steering_json text not null default '[]'
+    `);
+    await this.database.query(`
+      alter table research_requests add column if not exists research_focus text
     `);
     await this.database.query(`
       create table if not exists tracked_grants (
@@ -2709,9 +2825,10 @@ class PostgresStore {
       create table if not exists grant_catalog_entries (
         id text primary key,
         created_by_user_id text not null references users (id) on delete cascade,
-        source_type text not null check (source_type in ('promoted', 'curated')),
+        source_type text not null check (source_type in ('promoted', 'curated', 'research')),
         source_grant_id text unique,
         source_report_id text,
+        last_research_request_id text references research_requests (id) on delete set null,
         title text not null,
         sponsor text not null,
         funding_type text not null,
@@ -2725,9 +2842,44 @@ class PostgresStore {
         citations_json text not null default '[]',
         next_actions_json text not null default '[]',
         tags_json text not null default '[]',
+        provenance_notes text,
+        freshness_notes text,
+        pursuit_notes text,
+        last_validated_at text,
         created_at text not null,
         updated_at text not null
       )
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists last_research_request_id text references research_requests (id) on delete set null
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists provenance_notes text
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists freshness_notes text
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists pursuit_notes text
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists last_validated_at text
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries drop constraint if exists grant_catalog_entries_source_type_check
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries
+      add constraint grant_catalog_entries_source_type_check
+      check (source_type in ('promoted', 'curated', 'research'))
+    `);
+    await this.database.query(`
+      alter table research_requests
+      add column if not exists source_catalog_grant_id text references grant_catalog_entries (id) on delete set null
+    `);
+    await this.database.query(`
+      alter table tracked_grants
+      add column if not exists catalog_grant_id text references grant_catalog_entries (id) on delete set null
     `);
     await this.database.query(`
       create table if not exists grant_bookmarks (
@@ -2786,6 +2938,7 @@ class PostgresStore {
         owner_user_id text not null references users (id) on delete cascade,
         organization_id text references organizations (id) on delete set null,
         tracked_grant_id text unique,
+        catalog_grant_id text,
         opportunity_json text not null,
         stage text not null check (
           stage in ('qualifying', 'drafting', 'outreach', 'submitted', 'awarded', 'declined', 'no_bid')
@@ -2803,6 +2956,9 @@ class PostgresStore {
         created_at text not null,
         updated_at text not null
       )
+    `);
+    await this.database.query(`
+      alter table proposal_workspaces add column if not exists catalog_grant_id text
     `);
     await this.database.query(`
       create table if not exists agent_provider_connections (
@@ -2919,6 +3075,10 @@ export class ApplicationStore {
 
   async createJob(job: PlatformJob): Promise<PlatformJob> {
     return this.driver.createJob(job);
+  }
+
+  async saveJob(job: PlatformJob): Promise<PlatformJob> {
+    return this.driver.saveJob(job);
   }
 
   async findJobById(jobId: string): Promise<PlatformJob | null> {

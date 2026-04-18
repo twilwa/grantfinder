@@ -308,13 +308,13 @@ function renderDocsPage(baseUrl: string, x402: X402Settings, clientConfig: Brows
       <section class="grid panels">
         <section class="panel">
           <div class="section">
-            <h2>Start the app</h2>
-            <pre>bun install
-export DATABASE_URL=postgres://...
-export PRIVY_APP_ID=...
-export PRIVY_APP_SECRET=...
-bun run serve</pre>
-            <p>The browser dashboard lives at <code>${escapeHtml(baseUrl)}/</code>. The current client shell sees Privy as <code>${escapeHtml(clientConfig.privyAppId ?? "not configured")}</code>.</p>
+            <h2>Deployed surface</h2>
+            <p>The browser workspace lives at <code>${escapeHtml(baseUrl)}/</code>. The current deployment sees Privy as <code>${escapeHtml(clientConfig.privyAppId ?? "not configured")}</code>.</p>
+            <ul>
+              <li><code>GET /api/dashboard</code> exposes the public marketplace snapshot.</li>
+              <li><code>GET /api/workspace</code> returns the authenticated workspace snapshot for agents and browser clients.</li>
+              <li><code>/docs</code> and <code>/skill.md</code> publish the discovery surface for live agents.</li>
+            </ul>
           </div>
           <div class="section">
             <h2>Browser auth</h2>
@@ -331,6 +331,7 @@ bun run serve</pre>
   -H 'Authorization: Bearer &lt;privyAccessToken&gt;' \\
   -H 'content-type: application/json' \\
   -d '{"label":"cli"}'</pre>
+            <p>Revoke a minted token with <code>DELETE /api/auth/tokens/:id</code> when an agent no longer needs access.</p>
           </div>
         </section>
 
@@ -351,11 +352,21 @@ bun run serve</pre>
             <h2>Marketplace flow</h2>
             <ol>
               <li>Create a job as a requester via <code>POST /api/jobs</code>.</li>
-              <li>Or promote a tracked grant via <code>POST /api/grants/:id/proposal-job</code>.</li>
+              <li>Open a proposal workspace from a tracked grant via <code>POST /api/grants/:id/proposal-workspace</code> or from a catalog grant via <code>POST /api/catalog/grants/:id/proposal-workspace</code>.</li>
+              <li>Run proposal workspace automation via <code>POST /api/proposal-workspaces/:id/actions</code>.</li>
+              <li>Promote a tracked grant into the catalog via <code>POST /api/grants/:id/catalog-entry</code>.</li>
+              <li>Refresh a catalog grant with follow-up research via <code>POST /api/catalog/grants/:id/research-requests</code> and curate it with <code>PATCH /api/catalog/grants/:id</code>.</li>
+              <li>Create an application workspace via <code>POST /api/application-workspaces</code>, edit sections with <code>PATCH /api/application-workspaces/:id/sections/:sectionId</code>, generate section drafts with <code>POST /api/application-workspaces/:id/sections/:sectionId/generate</code>, and finalize with <code>POST /api/application-workspaces/:id/finalize</code>.</li>
+              <li>Register provider credentials with <code>POST /api/provider-connections</code> before generation or proposal automation.</li>
               <li>Submit an offer as a specialist via <code>POST /api/jobs/:id/offers</code>.</li>
               <li>Accept the offer as the requester via <code>POST /api/offers/:id/accept</code>.</li>
               <li>Fund the engagement via <code>POST /api/engagements/:id/fund</code>.</li>
             </ol>
+          </div>
+          <div class="section">
+            <h2>Browser workspace</h2>
+            <p>The authenticated browser surface currently exposes request marketplace, research dashboard, my requests, my grants, proposal workspaces, organization, catalog, applications, and providers.</p>
+            <p>Privy sign-in, sign-out, and embedded wallet creation remain browser-only entry points. The post-auth workflows behind those tabs are available over REST and JSON-RPC.</p>
           </div>
           <div class="section">
             <h2>x402 funding</h2>
@@ -370,7 +381,7 @@ X402_PAY_TO=${escapeHtml(x402.payTo)}</pre>
   -H 'Authorization: Bearer &lt;agentToken&gt;' \\
   -H 'content-type: application/json' \\
   -d '{"jsonrpc":"2.0","id":"jobs","method":"jobs.list","params":{}}'</pre>
-            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>organization.get</code>, <code>organization.upsert</code>, <code>organization.personnel.create</code>, <code>organization.invites.accept</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grantReports.list</code>, <code>catalog.grants.list</code>, <code>catalog.grants.get</code>, <code>catalog.grants.promote</code>, <code>catalog.grants.bookmark</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
+            <p>Available methods: <code>auth.session</code>, <code>auth.profile.upsert</code>, <code>auth.tokens.list</code>, <code>auth.tokens.create</code>, <code>organization.get</code>, <code>organization.upsert</code>, <code>organization.personnel.create</code>, <code>organization.invites.accept</code>, <code>workspace.get</code>, <code>research.scenarios.list</code>, <code>research.scenarios.create</code>, <code>research.requests.create</code>, <code>research.requests.get</code>, <code>research.requests.run</code>, <code>research.requests.steer</code>, <code>research.run</code>, <code>grantReports.list</code>, <code>catalog.grants.list</code>, <code>catalog.grants.get</code>, <code>catalog.grants.promote</code>, <code>catalog.grants.bookmark</code>, <code>catalog.grants.update</code>, <code>catalog.grants.startResearch</code>, <code>catalog.grants.createProposalWorkspace</code>, <code>catalog.grants.createProposalJob</code>, <code>proposalWorkspaces.list</code>, <code>proposalWorkspaces.create</code>, <code>proposalWorkspaces.get</code>, <code>proposalWorkspaces.update</code>, <code>proposalWorkspaces.runAction</code>, <code>proposalWorkspaces.createProposalJob</code>, <code>catalog.schemas.upsert</code>, <code>application.templates.create</code>, <code>application.workspaces.create</code>, <code>application.workspaces.get</code>, <code>application.workspaces.updateSection</code>, <code>application.workspaces.finalize</code>, <code>application.workspaces.generateSection</code>, <code>providerConnections.create</code>, <code>agentExecutions.list</code>, <code>grants.updateQueue</code>, <code>grants.createProposalJob</code>, <code>jobs.list</code>, <code>jobs.create</code>, <code>offers.create</code>, <code>offers.accept</code>, <code>engagements.get</code>, <code>engagements.fund</code>.</p>
           </div>
         </section>
       </section>`,
@@ -394,10 +405,12 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 
 ## REST endpoints
 
+- \`GET /api/dashboard\`
 - \`GET /api/auth/session\`
 - \`POST /api/auth/profile\`
 - \`GET /api/auth/tokens\`
 - \`POST /api/auth/tokens\`
+- \`DELETE /api/auth/tokens/:id\`
 - \`GET /api/organization\`
 - \`PUT /api/organization\`
 - \`POST /api/organization/personnel\`
@@ -413,14 +426,26 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`POST /api/research\`
 - \`PATCH /api/grants/:id\`
 - \`POST /api/grants/:id/catalog-entry\`
+- \`POST /api/grants/:id/proposal-workspace\`
 - \`POST /api/grants/:id/proposal-job\`
+- \`GET /api/proposal-workspaces\`
+- \`POST /api/proposal-workspaces\`
+- \`GET /api/proposal-workspaces/:id\`
+- \`PATCH /api/proposal-workspaces/:id\`
+- \`POST /api/proposal-workspaces/:id/actions\`
+- \`POST /api/proposal-workspaces/:id/proposal-job\`
+- \`POST /api/catalog/grants/:id/proposal-workspace\`
+- \`POST /api/catalog/grants/:id/proposal-job\`
 - \`GET /api/catalog/grants\`
 - \`GET /api/catalog/grants/:id\`
+- \`PATCH /api/catalog/grants/:id\`
+- \`POST /api/catalog/grants/:id/research-requests\`
 - \`PUT /api/catalog/grants/:id/schema\`
 - \`PUT /api/catalog/grants/:id/bookmark\`
 - \`POST /api/application-templates\`
 - \`POST /api/application-workspaces\`
 - \`GET /api/application-workspaces/:id\`
+- \`PATCH /api/application-workspaces/:id/sections/:sectionId\`
 - \`POST /api/application-workspaces/:id/finalize\`
 - \`POST /api/application-workspaces/:id/sections/:sectionId/generate\`
 - \`POST /api/provider-connections\`
@@ -455,10 +480,21 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`catalog.grants.get\`
 - \`catalog.grants.promote\`
 - \`catalog.grants.bookmark\`
+- \`catalog.grants.update\`
+- \`catalog.grants.startResearch\`
+- \`catalog.grants.createProposalWorkspace\`
+- \`catalog.grants.createProposalJob\`
+- \`proposalWorkspaces.list\`
+- \`proposalWorkspaces.create\`
+- \`proposalWorkspaces.get\`
+- \`proposalWorkspaces.update\`
+- \`proposalWorkspaces.runAction\`
+- \`proposalWorkspaces.createProposalJob\`
 - \`catalog.schemas.upsert\`
 - \`application.templates.create\`
 - \`application.workspaces.create\`
 - \`application.workspaces.get\`
+- \`application.workspaces.updateSection\`
 - \`application.workspaces.finalize\`
 - \`application.workspaces.generateSection\`
 - \`providerConnections.create\`
@@ -483,7 +519,8 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 ## Browser UI
 
 - Dashboard: \`${baseUrl}/\`
-- Tabs: request marketplace, research dashboard, my requests, my grants
+- Tabs: request marketplace, research dashboard, my requests, my grants, proposal workspaces, organization, catalog, applications, providers
+- Browser-only entry points: Privy sign-in, sign-out, and embedded wallet creation
 - Docs: \`${baseUrl}/docs\`
 - Skill markdown: \`${baseUrl}/skill.md\`
 `;
@@ -818,6 +855,59 @@ export function createApp(options: AppOptions = {}) {
     return c.json(await services.getCatalogGrant(user, c.req.param("id")));
   });
 
+  app.patch("/api/catalog/grants/:id", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      title?: string;
+      sponsor?: string;
+      fundingType?: string;
+      fitScore?: number;
+      whyFit?: string;
+      eligibilityNotes?: string[];
+      amountSummary?: string;
+      deadlineSummary?: string;
+      geography?: string;
+      status?: string;
+      citations?: string[];
+      nextActions?: string[];
+      tags?: string[];
+      provenanceNotes?: string | null;
+      freshnessNotes?: string | null;
+      pursuitNotes?: string | null;
+      lastValidatedAt?: string | null;
+    }>(c.req.raw);
+    return c.json(await services.updateCatalogGrant(user, c.req.param("id"), payload));
+  });
+
+  app.post("/api/catalog/grants/:id/research-requests", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const payload = await parseJson<{
+      researchFocus?: string | null;
+      awaitCompletion?: boolean;
+    }>(c.req.raw);
+    return c.json(await services.startCatalogGrantResearch(user, c.req.param("id"), payload), 201);
+  });
+
+  app.post("/api/catalog/grants/:id/proposal-workspace", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const result = await services.createProposalWorkspaceFromCatalogGrant(user, c.req.param("id"));
+    return c.json({ workspace: result.workspace }, result.created ? 201 : 200);
+  });
+
+  app.post("/api/catalog/grants/:id/proposal-job", async (c) => {
+    const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
+    const result = await services.createProposalJobFromCatalogGrant(user, c.req.param("id"));
+    return c.json(
+      {
+        job: result.job,
+        grant: result.grant,
+        workspace: result.workspace,
+        engagement: result.engagement,
+      },
+      result.created ? 201 : 200,
+    );
+  });
+
   app.put("/api/catalog/grants/:id/schema", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     const payload = await parseJson<{
@@ -916,6 +1006,7 @@ export function createApp(options: AppOptions = {}) {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     const payload = await parseJson<{
       trackedGrantId?: string | null;
+      catalogGrantId?: string | null;
       manualOpportunity?: {
         title: string;
         sponsor: string;
@@ -1336,6 +1427,72 @@ export function createApp(options: AppOptions = {}) {
           );
           break;
         }
+        case "catalog.grants.createProposalWorkspace": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProposalWorkspaceFromCatalogGrant(user, String(params.grantId ?? ""));
+          break;
+        }
+        case "catalog.grants.createProposalJob": {
+          const user = await services.authenticate(authToken);
+          result = await services.createProposalJobFromCatalogGrant(user, String(params.grantId ?? ""));
+          break;
+        }
+        case "catalog.grants.update": {
+          const user = await services.authenticate(authToken);
+          result = await services.updateCatalogGrant(user, String(params.grantId ?? ""), {
+            title: typeof params.title === "string" ? params.title : undefined,
+            sponsor: typeof params.sponsor === "string" ? params.sponsor : undefined,
+            fundingType: typeof params.fundingType === "string" ? params.fundingType : undefined,
+            fitScore:
+              typeof params.fitScore === "number" && Number.isFinite(params.fitScore)
+                ? params.fitScore
+                : undefined,
+            whyFit: typeof params.whyFit === "string" ? params.whyFit : undefined,
+            eligibilityNotes: Array.isArray(params.eligibilityNotes)
+              ? params.eligibilityNotes.map((entry) => String(entry))
+              : undefined,
+            amountSummary: typeof params.amountSummary === "string" ? params.amountSummary : undefined,
+            deadlineSummary:
+              typeof params.deadlineSummary === "string" ? params.deadlineSummary : undefined,
+            geography: typeof params.geography === "string" ? params.geography : undefined,
+            status: typeof params.status === "string" ? params.status : undefined,
+            citations: Array.isArray(params.citations)
+              ? params.citations.map((entry) => String(entry))
+              : undefined,
+            nextActions: Array.isArray(params.nextActions)
+              ? params.nextActions.map((entry) => String(entry))
+              : undefined,
+            tags: Array.isArray(params.tags) ? params.tags.map((entry) => String(entry)) : undefined,
+            provenanceNotes:
+              params.provenanceNotes === null || typeof params.provenanceNotes === "string"
+                ? (params.provenanceNotes as string | null | undefined)
+                : undefined,
+            freshnessNotes:
+              params.freshnessNotes === null || typeof params.freshnessNotes === "string"
+                ? (params.freshnessNotes as string | null | undefined)
+                : undefined,
+            pursuitNotes:
+              params.pursuitNotes === null || typeof params.pursuitNotes === "string"
+                ? (params.pursuitNotes as string | null | undefined)
+                : undefined,
+            lastValidatedAt:
+              params.lastValidatedAt === null || typeof params.lastValidatedAt === "string"
+                ? (params.lastValidatedAt as string | null | undefined)
+                : undefined,
+          });
+          break;
+        }
+        case "catalog.grants.startResearch": {
+          const user = await services.authenticate(authToken);
+          result = await services.startCatalogGrantResearch(user, String(params.grantId ?? ""), {
+            researchFocus:
+              params.researchFocus === null || typeof params.researchFocus === "string"
+                ? (params.researchFocus as string | null | undefined)
+                : undefined,
+            awaitCompletion: params.awaitCompletion === false ? false : true,
+          });
+          break;
+        }
         case "catalog.schemas.upsert": {
           const user = await services.authenticate(authToken);
           result = await services.upsertGrantApplicationSchema(user, String(params.grantId ?? ""), {
@@ -1566,6 +1723,7 @@ export function createApp(options: AppOptions = {}) {
           const user = await services.authenticate(authToken);
           result = await services.createProposalWorkspace(user, {
             trackedGrantId: typeof params.trackedGrantId === "string" ? params.trackedGrantId : null,
+            catalogGrantId: typeof params.catalogGrantId === "string" ? params.catalogGrantId : null,
             manualOpportunity:
               params.manualOpportunity && typeof params.manualOpportunity === "object"
                 ? {

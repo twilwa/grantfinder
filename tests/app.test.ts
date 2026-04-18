@@ -240,7 +240,7 @@ async function callJsonRpc(
   return { response, payload } as const;
 }
 
-test("docs and skill discovery routes describe Privy auth and agent tokens", async () => {
+test("docs and skill discovery routes describe deployed agent surfaces", async () => {
   const app = createTestApp();
 
   const healthResponse = await app.request("/health");
@@ -250,9 +250,32 @@ test("docs and skill discovery routes describe Privy auth and agent tokens", asy
   expect(healthResponse.status).toBe(200);
   expect(await healthResponse.json()).toEqual({ status: "ok" });
   expect(docsResponse.status).toBe(200);
-  expect(await docsResponse.text()).toContain("Privy");
+  const docsText = await docsResponse.text();
+  expect(docsText).toContain("Privy");
+  expect(docsText).toContain("GET /api/dashboard");
+  expect(docsText).toContain("POST /api/grants/:id/catalog-entry");
+  expect(docsText).toContain("POST /api/catalog/grants/:id/research-requests");
+  expect(docsText).toContain("PATCH /api/application-workspaces/:id/sections/:sectionId");
+  expect(docsText).toContain("application.workspaces.updateSection");
+  expect(docsText).toContain("proposal workspaces, organization, catalog, applications, and providers");
+  expect(docsText).toContain("POST /api/proposal-workspaces/:id/actions");
+  expect(docsText).not.toContain("bun install");
+  expect(docsText).not.toContain("DATABASE_URL");
   expect(skillResponse.status).toBe(200);
-  expect(await skillResponse.text()).toContain("agent token");
+  const skillText = await skillResponse.text();
+  expect(skillText).toContain("agent token");
+  expect(skillText).toContain("GET /api/dashboard");
+  expect(skillText).toContain("DELETE /api/auth/tokens/:id");
+  expect(skillText).toContain("POST /api/catalog/grants/:id/research-requests");
+  expect(skillText).toContain("PATCH /api/application-workspaces/:id/sections/:sectionId");
+  expect(skillText).toContain("catalog.grants.update");
+  expect(skillText).toContain("catalog.grants.startResearch");
+  expect(skillText).toContain("application.workspaces.updateSection");
+  expect(skillText).toContain("POST /api/proposal-workspaces/:id/actions");
+  expect(skillText).toContain("proposalWorkspaces.runAction");
+  expect(skillText).toContain(
+    "request marketplace, research dashboard, my requests, my grants, proposal workspaces, organization, catalog, applications, providers",
+  );
 });
 
 test("browser dashboard serves the client app shell", async () => {
@@ -884,7 +907,7 @@ test("organization prefills are captured on research requests and application wo
   });
 });
 
-test("completed research requests create durable grant reports without creating catalog entries", async () => {
+test("completed research requests create durable catalog entries and link tracked grants", async () => {
   const app = createTestApp({
     researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
   });
@@ -932,6 +955,7 @@ test("completed research requests create durable grant reports without creating 
       authorization: "Bearer browser_requester",
     },
   });
+  const runPayload = await runResponse.json();
   const reportsResponse = await app.request("/api/grant-reports", {
     headers: {
       authorization: "Bearer browser_requester",
@@ -949,6 +973,14 @@ test("completed research requests create durable grant reports without creating 
   });
 
   expect(runResponse.status).toBe(200);
+  expect(runPayload.grants).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        requestId: requestPayload.request.id,
+        catalogGrantId: expect.any(String),
+      }),
+    ]),
+  );
   expect(reportsResponse.status).toBe(200);
   expect(await reportsResponse.json()).toMatchObject({
     reports: [
@@ -968,7 +1000,22 @@ test("completed research requests create durable grant reports without creating 
   });
   expect(catalogResponse.status).toBe(200);
   expect(await catalogResponse.json()).toMatchObject({
-    grants: [],
+    grants: expect.arrayContaining([
+      expect.objectContaining({
+        sourceType: "research",
+        sourceGrantId: runPayload.grants[0].id,
+        sourceReportId: expect.any(String),
+        lastResearchRequestId: requestPayload.request.id,
+        title: "State Automation Grant",
+      }),
+      expect.objectContaining({
+        sourceType: "research",
+        sourceGrantId: runPayload.grants[1].id,
+        sourceReportId: expect.any(String),
+        lastResearchRequestId: requestPayload.request.id,
+        title: "Applied Research Voucher",
+      }),
+    ]),
   });
   expect(workspaceResponse.status).toBe(200);
   expect(await workspaceResponse.json()).toMatchObject({
@@ -978,7 +1025,720 @@ test("completed research requests create durable grant reports without creating 
         opportunityCount: 2,
       }),
     ],
-    catalog: [],
+    catalog: expect.arrayContaining([
+      expect.objectContaining({
+        sourceType: "research",
+        lastResearchRequestId: requestPayload.request.id,
+      }),
+    ]),
+  });
+});
+
+test("rediscovered opportunities update the same durable catalog entries across research requests", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const firstRequestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const firstRequestPayload = await firstRequestResponse.json();
+  const firstRunResponse = await app.request(`/api/research/requests/${firstRequestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const firstRunPayload = await firstRunResponse.json();
+
+  const secondRequestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const secondRequestPayload = await secondRequestResponse.json();
+  const secondRunResponse = await app.request(`/api/research/requests/${secondRequestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const secondRunPayload = await secondRunResponse.json();
+  const catalogResponse = await app.request("/api/catalog/grants", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const catalogPayload = await catalogResponse.json();
+  const automationGrant = (catalogPayload.grants as Array<Record<string, unknown>>).find(
+    (grant) => grant.title === "State Automation Grant",
+  );
+
+  expect(firstRunResponse.status).toBe(200);
+  expect(secondRunResponse.status).toBe(200);
+  expect(catalogResponse.status).toBe(200);
+  expect(catalogPayload.grants).toHaveLength(2);
+  expect(firstRunPayload.grants[0].catalogGrantId).toBe(secondRunPayload.grants[0].catalogGrantId);
+  expect(automationGrant).toMatchObject({
+    sourceGrantId: secondRunPayload.grants[0].id,
+    lastResearchRequestId: secondRequestPayload.request.id,
+  });
+});
+
+test("durable catalog entries can be enriched over REST and JSON-RPC", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const catalogGrantId = String(runPayload.grants[0].catalogGrantId);
+
+  const restUpdateResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      fitScore: 94,
+      whyFit: "Confirmed fit after sponsor review.",
+      eligibilityNotes: ["Requires a domestic operating entity.", "Needs a 1:1 equipment match."],
+      amountSummary: "$75,000 to $175,000",
+      deadlineSummary: "Applications close May 31, 2026",
+      geography: "California",
+      status: "validated",
+      citations: ["https://example.gov/grants/automation", "https://example.gov/grants/faq"],
+      nextActions: ["Gather the matching-funds letter.", "Prepare the project timeline."],
+      tags: ["automation", "priority"],
+      provenanceNotes: "Confirmed against the program guide and sponsor FAQ.",
+      freshnessNotes: "Deadline reviewed this week.",
+      pursuitNotes: "Strong fit for the next application cycle.",
+      lastValidatedAt: "2026-04-07T12:00:00.000Z",
+    }),
+  });
+  const rpcUpdateResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.update", {
+    grantId: catalogGrantId,
+    freshnessNotes: "Deadline rechecked during proposal triage.",
+    pursuitNotes: "Advance after confirming matching funds.",
+  });
+  const detailResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const rpcDetailResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.get", {
+    grantId: catalogGrantId,
+  });
+
+  expect(runResponse.status).toBe(200);
+  expect(restUpdateResponse.status).toBe(200);
+  expect(rpcUpdateResponse.response.status).toBe(200);
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    grant: {
+      id: catalogGrantId,
+      title: "State Automation Grant",
+      sponsor: "State Economic Development Office",
+      fundingType: "grant",
+      fitScore: 94,
+      whyFit: "Confirmed fit after sponsor review.",
+      eligibilityNotes: ["Requires a domestic operating entity.", "Needs a 1:1 equipment match."],
+      amountSummary: "$75,000 to $175,000",
+      deadlineSummary: "Applications close May 31, 2026",
+      geography: "California",
+      status: "validated",
+      citations: ["https://example.gov/grants/automation", "https://example.gov/grants/faq"],
+      nextActions: ["Gather the matching-funds letter.", "Prepare the project timeline."],
+      tags: ["automation", "priority"],
+      provenanceNotes: "Confirmed against the program guide and sponsor FAQ.",
+      freshnessNotes: "Deadline rechecked during proposal triage.",
+      pursuitNotes: "Advance after confirming matching funds.",
+      lastValidatedAt: "2026-04-07T12:00:00.000Z",
+    },
+  });
+  expect(rpcDetailResponse.payload).toMatchObject({
+    result: {
+      grant: {
+        id: catalogGrantId,
+        title: "State Automation Grant",
+        sponsor: "State Economic Development Office",
+        fundingType: "grant",
+        fitScore: 94,
+        whyFit: "Confirmed fit after sponsor review.",
+        eligibilityNotes: ["Requires a domestic operating entity.", "Needs a 1:1 equipment match."],
+        amountSummary: "$75,000 to $175,000",
+        deadlineSummary: "Applications close May 31, 2026",
+        geography: "California",
+        status: "validated",
+        citations: ["https://example.gov/grants/automation", "https://example.gov/grants/faq"],
+        nextActions: ["Gather the matching-funds letter.", "Prepare the project timeline."],
+        tags: ["automation", "priority"],
+        provenanceNotes: "Confirmed against the program guide and sponsor FAQ.",
+        freshnessNotes: "Deadline rechecked during proposal triage.",
+        pursuitNotes: "Advance after confirming matching funds.",
+        lastValidatedAt: "2026-04-07T12:00:00.000Z",
+      },
+    },
+  });
+});
+
+test("durable catalog entries can start follow-up research and expose linked history", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const initialRequestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const initialRequestPayload = await initialRequestResponse.json();
+  const initialRunResponse = await app.request(`/api/research/requests/${initialRequestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const initialRunPayload = await initialRunResponse.json();
+  const catalogGrantId = String(initialRunPayload.grants[0].catalogGrantId);
+
+  const followUpResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/research-requests`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      researchFocus: "Verify whether matching funds are mandatory.",
+      awaitCompletion: true,
+    }),
+  });
+  const followUpPayload = await followUpResponse.json();
+  const detailResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(initialRunResponse.status).toBe(200);
+  expect(followUpResponse.status).toBe(201);
+  expect(followUpPayload.request).toMatchObject({
+    sourceCatalogGrantId: catalogGrantId,
+    researchFocus: "Verify whether matching funds are mandatory.",
+    status: "completed",
+  });
+  expect(followUpPayload.grants).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        catalogGrantId,
+      }),
+    ]),
+  );
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    grant: {
+      id: catalogGrantId,
+      lastResearchRequestId: followUpPayload.request.id,
+    },
+    latestReport: {
+      requestId: followUpPayload.request.id,
+      opportunityCount: 2,
+    },
+    researchRequests: expect.arrayContaining([
+      expect.objectContaining({
+        id: initialRequestPayload.request.id,
+      }),
+      expect.objectContaining({
+        id: followUpPayload.request.id,
+        sourceCatalogGrantId: catalogGrantId,
+        researchFocus: "Verify whether matching funds are mandatory.",
+      }),
+    ]),
+  });
+});
+
+test("durable catalog follow-up research is available over JSON-RPC", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const initialRequestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const initialRequestPayload = await initialRequestResponse.json();
+  const initialRunResponse = await app.request(`/api/research/requests/${initialRequestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const initialRunPayload = await initialRunResponse.json();
+  const catalogGrantId = String(initialRunPayload.grants[0].catalogGrantId);
+
+  const rpcRunResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.startResearch", {
+    grantId: catalogGrantId,
+    researchFocus: "Look for updated cost-share language.",
+    awaitCompletion: true,
+  });
+  const rpcDetailResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.get", {
+    grantId: catalogGrantId,
+  });
+
+  expect(initialRunResponse.status).toBe(200);
+  expect(rpcRunResponse.response.status).toBe(200);
+  expect(rpcRunResponse.payload).toMatchObject({
+    result: {
+      request: {
+        sourceCatalogGrantId: catalogGrantId,
+        researchFocus: "Look for updated cost-share language.",
+        status: "completed",
+      },
+      grants: expect.arrayContaining([
+        expect.objectContaining({
+          catalogGrantId,
+        }),
+      ]),
+    },
+  });
+  expect(rpcDetailResponse.payload).toMatchObject({
+    result: {
+      grant: {
+        id: catalogGrantId,
+        lastResearchRequestId: rpcRunResponse.payload.result.request.id,
+      },
+      researchRequests: expect.arrayContaining([
+        expect.objectContaining({
+          id: rpcRunResponse.payload.result.request.id,
+          sourceCatalogGrantId: catalogGrantId,
+        }),
+      ]),
+    },
+  });
+});
+
+test("durable catalog entries can create and reopen proposal workspaces", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const firstGrantId = String(runPayload.grants[0].id);
+  const catalogGrantId = String(runPayload.grants[0].catalogGrantId);
+
+  const createResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const createPayload = await createResponse.json();
+
+  const resumeResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const resumePayload = await resumeResponse.json();
+
+  const catalogDetailResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(runResponse.status).toBe(200);
+  expect(createResponse.status).toBe(201);
+  expect(createPayload.workspace).toMatchObject({
+    catalogGrantId,
+    trackedGrantId: firstGrantId,
+    opportunity: {
+      sourceType: "catalog_grant",
+      title: "State Automation Grant",
+    },
+  });
+  expect(resumeResponse.status).toBe(200);
+  expect(resumePayload.workspace).toMatchObject({
+    id: createPayload.workspace.id,
+    catalogGrantId,
+  });
+  expect(catalogDetailResponse.status).toBe(200);
+  expect(await catalogDetailResponse.json()).toMatchObject({
+    grant: {
+      id: catalogGrantId,
+    },
+    proposalWorkspace: {
+      id: createPayload.workspace.id,
+      catalogGrantId,
+    },
+  });
+});
+
+test("durable catalog entries can create or attach proposal jobs and expose source context", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+  await createProfile(app, "browser_specialist", {
+    name: "Reviewer",
+    role: "specialist",
+    walletAddress: "0x0000000000000000000000000000000000000002",
+    smartWalletAddress: "0x0000000000000000000000000000000000000202",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const firstGrantId = String(runPayload.grants[0].id);
+  const catalogGrantId = String(runPayload.grants[0].catalogGrantId);
+
+  const createWorkspaceResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const createWorkspacePayload = await createWorkspaceResponse.json();
+
+  const firstJobResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-job`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const firstJobPayload = await firstJobResponse.json();
+
+  const secondJobResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-job`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const secondJobPayload = await secondJobResponse.json();
+
+  const jobsResponse = await app.request("/api/jobs", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const catalogDetailResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  const offerResponse = await app.request(`/api/jobs/${firstJobPayload.job.id}/offers`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_specialist",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "I can help draft the proposal and coordinate the submission.",
+      amountUsd: "2500",
+      payoutAddress: "0x0000000000000000000000000000000000000abc",
+    }),
+  });
+  const offerPayload = await offerResponse.json();
+
+  const acceptResponse = await app.request(`/api/offers/${offerPayload.offer.id}/accept`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const acceptPayload = await acceptResponse.json();
+
+  const engagementResponse = await app.request(`/api/engagements/${acceptPayload.engagement.id}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(runResponse.status).toBe(200);
+  expect(createWorkspaceResponse.status).toBe(201);
+  expect(firstJobResponse.status).toBe(201);
+  expect(firstJobPayload).toMatchObject({
+    job: {
+      type: "grant_proposal",
+      grantId: firstGrantId,
+      catalogGrantId,
+      targetType: "proposal_workspace",
+      targetId: createWorkspacePayload.workspace.id,
+    },
+    workspace: {
+      id: createWorkspacePayload.workspace.id,
+      catalogGrantId,
+    },
+  });
+  expect(secondJobResponse.status).toBe(200);
+  expect(secondJobPayload).toMatchObject({
+    job: {
+      id: firstJobPayload.job.id,
+      catalogGrantId,
+    },
+  });
+  expect(jobsResponse.status).toBe(200);
+  expect(await jobsResponse.json()).toMatchObject({
+    jobs: expect.arrayContaining([
+      expect.objectContaining({
+        id: firstJobPayload.job.id,
+        catalogGrantId,
+        grantId: firstGrantId,
+        targetType: "proposal_workspace",
+        targetId: createWorkspacePayload.workspace.id,
+      }),
+    ]),
+  });
+  expect(catalogDetailResponse.status).toBe(200);
+  expect(await catalogDetailResponse.json()).toMatchObject({
+    grant: {
+      id: catalogGrantId,
+    },
+    proposalWorkspace: {
+      id: createWorkspacePayload.workspace.id,
+      catalogGrantId,
+      proposalJob: {
+        id: firstJobPayload.job.id,
+        catalogGrantId,
+      },
+    },
+    proposalJob: {
+      id: firstJobPayload.job.id,
+      catalogGrantId,
+    },
+  });
+  expect(acceptResponse.status).toBe(200);
+  expect(engagementResponse.status).toBe(200);
+  expect(await engagementResponse.json()).toMatchObject({
+    engagement: {
+      id: acceptPayload.engagement.id,
+      catalogGrantId,
+    },
   });
 });
 
@@ -1070,6 +1830,7 @@ test("tracked opportunities can be promoted into catalog entries and bookmarked"
     sourceGrantId: firstGrantId,
     sourceReportId: expect.any(String),
     sourceType: "promoted",
+    lastResearchRequestId: requestPayload.request.id,
     title: "State Automation Grant",
     isBookmarked: false,
   });
@@ -1099,12 +1860,12 @@ test("tracked opportunities can be promoted into catalog entries and bookmarked"
   });
   expect(workspaceResponse.status).toBe(200);
   expect(await workspaceResponse.json()).toMatchObject({
-    catalog: [
+    catalog: expect.arrayContaining([
       expect.objectContaining({
         id: promotePayload.grant.id,
         isBookmarked: true,
       }),
-    ],
+    ]),
   });
 });
 

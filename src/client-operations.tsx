@@ -66,9 +66,10 @@ export interface OrganizationSummary {
 export interface CatalogGrantSummary {
   id: string;
   createdByUserId: string;
-  sourceType: string;
+  sourceType: "promoted" | "curated" | "research";
   sourceGrantId: string | null;
   sourceReportId: string | null;
+  lastResearchRequestId: string | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -82,9 +83,72 @@ export interface CatalogGrantSummary {
   citations: string[];
   nextActions: string[];
   tags: string[];
+  provenanceNotes: string | null;
+  freshnessNotes: string | null;
+  pursuitNotes: string | null;
+  lastValidatedAt: string | null;
   isBookmarked: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CatalogReportSummary {
+  id: string;
+  requestId: string;
+  requesterId: string;
+  businessCaseId: string;
+  executiveSummary: string;
+  searchSummary: string;
+  opportunityCount: number;
+  opportunities: Array<{ title: string }>;
+  rejectedLeads: Array<{ title: string }>;
+  nextActions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CatalogResearchActivity {
+  id: string;
+  kind: "status" | "tool" | "steering";
+  title: string;
+  detail: string;
+  tone: "neutral" | "good" | "warn" | "bad";
+  timestamp: string;
+}
+
+export interface CatalogResearchSteeringNote {
+  id: string;
+  prompt: string;
+  status: "queued" | "applied";
+  createdAt: string;
+  appliedAt: string | null;
+}
+
+export interface CatalogResearchRequestSummary {
+  id: string;
+  requesterId: string;
+  scenarioId: string;
+  sourceCatalogGrantId: string | null;
+  researchFocus: string | null;
+  organizationPrefill: unknown | null;
+  status: "draft" | "running" | "completed" | "failed";
+  runPhase: "idle" | "briefing" | "searching" | "reading" | "synthesizing" | "publishing" | "completed" | "failed";
+  progressSummary: string | null;
+  runStartedAt: string | null;
+  latestBrief: unknown | null;
+  latestReport: {
+    executiveSummary?: string;
+    searchSummary?: string;
+    opportunities?: Array<{ title: string }>;
+  } | null;
+  errorMessage: string | null;
+  activity: CatalogResearchActivity[];
+  steeringNotes: CatalogResearchSteeringNote[];
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string | null;
+  grantCount: number;
+  activeGrantCount: number;
 }
 
 export interface ApplicationSectionDefinition {
@@ -113,6 +177,23 @@ export interface CatalogGrantSchema {
 export interface CatalogGrantDetailPayload {
   grant: CatalogGrantSummary;
   schema: CatalogGrantSchema | null;
+  latestReport: CatalogReportSummary | null;
+  researchRequests: CatalogResearchRequestSummary[];
+  proposalWorkspace: ProposalWorkspaceSummary | null;
+  proposalJob: {
+    id: string;
+    title: string;
+    status: string;
+    offerCount: number;
+    catalogGrantId: string | null;
+  } | null;
+  engagement: {
+    id: string;
+    status: string;
+    amountUsd: string;
+    specialistName: string;
+    catalogGrantId: string | null;
+  } | null;
 }
 
 export interface ApplicationTemplateSummary {
@@ -182,8 +263,9 @@ export interface ProposalWorkspaceSummary {
   ownerUserId: string;
   organizationId: string | null;
   trackedGrantId: string | null;
+  catalogGrantId: string | null;
   opportunity: {
-    sourceType: "tracked_grant" | "manual";
+    sourceType: "tracked_grant" | "catalog_grant" | "manual";
     title: string;
     sponsor: string;
     fundingType: string;
@@ -246,6 +328,7 @@ export interface ProposalWorkspaceSummary {
     title: string;
     status: string;
     offerCount: number;
+    catalogGrantId: string | null;
   } | null;
   engagementId: string | null;
   engagement: {
@@ -253,6 +336,7 @@ export interface ProposalWorkspaceSummary {
     status: string;
     amountUsd: string;
     specialistName: string;
+    catalogGrantId: string | null;
   } | null;
   createdAt: string;
   updatedAt: string;
@@ -459,20 +543,35 @@ export function ProposalWorkspaceView({
   grants,
   workspaces,
   applicationWorkspaces,
+  providerConnections,
   selectedWorkspaceId: selectedWorkspaceIdProp,
   busyAction,
   onCreateWorkspaceFromGrant,
   onCreateProposalJob,
   onUpdateWorkspace,
+  onRunWorkspaceAction,
 }: {
   grants: ProposalGrantSummary[];
   workspaces: ProposalWorkspaceSummary[];
   applicationWorkspaces: ApplicationWorkspaceSummary[];
+  providerConnections: ProviderConnectionSummary[];
   selectedWorkspaceId?: string | null;
   busyAction: string | null;
   onCreateWorkspaceFromGrant: (grantId: string) => void;
   onCreateProposalJob: (workspaceId: string) => void;
   onUpdateWorkspace: (workspaceId: string, input: ProposalWorkspaceUpdateInput) => void;
+  onRunWorkspaceAction: (
+    workspaceId: string,
+    input: {
+      action:
+        | "evaluate_feasibility"
+        | "discover_contacts"
+        | "draft_outreach"
+        | "plan_next_steps"
+        | "refresh_draft";
+      providerConnectionId: string;
+    },
+  ) => void;
 }) {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
     () => selectedWorkspaceIdProp ?? workspaces[0]?.id ?? null,
@@ -523,6 +622,21 @@ export function ProposalWorkspaceView({
     selectedWorkspace?.primaryApplicationWorkspace ??
     applicationWorkspaces.find((workspace) => workspace.id === selectedWorkspace?.primaryApplicationWorkspaceId) ??
     null;
+  const proposalActionConnections = providerConnections.filter((connection) =>
+    connection.allowedArtifactTypes.includes("proposal_workspace"),
+  );
+  const [proposalActionProviderConnectionId, setProposalActionProviderConnectionId] = useState<string>("");
+
+  useEffect(() => {
+    if (
+      proposalActionProviderConnectionId &&
+      proposalActionConnections.some((connection) => connection.id === proposalActionProviderConnectionId)
+    ) {
+      return;
+    }
+
+    setProposalActionProviderConnectionId(proposalActionConnections[0]?.id ?? "");
+  }, [proposalActionConnections, proposalActionProviderConnectionId]);
 
   useEffect(() => {
     if (!selectedWorkspace) {
@@ -769,6 +883,60 @@ export function ProposalWorkspaceView({
               >
                 Create or attach proposal job
               </button>
+            </div>
+
+            <div style={subtleCardStyle}>
+              <strong>Automation</strong>
+              <div style={{ marginTop: "0.45rem", color: "#566154", lineHeight: 1.55 }}>
+                Use a provider connection to evaluate feasibility, discover contacts, draft outreach, or refresh the linked draft.
+              </div>
+              <label style={{ display: "grid", gap: "0.35rem", marginTop: "0.75rem" }}>
+                <span>Provider connection</span>
+                <select
+                  style={inputStyle}
+                  value={proposalActionProviderConnectionId}
+                  onChange={(event) => setProposalActionProviderConnectionId(event.target.value)}
+                >
+                  <option value="">Select a proposal workspace connection</option>
+                  {proposalActionConnections.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.label} ({connection.provider})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+                {[
+                  ["evaluate_feasibility", "Evaluate feasibility"],
+                  ["discover_contacts", "Discover contacts"],
+                  ["draft_outreach", "Draft outreach"],
+                  ["plan_next_steps", "Plan next steps"],
+                  ["refresh_draft", "Refresh draft"],
+                ].map(([action, label]) => (
+                  <button
+                    key={action}
+                    type="button"
+                    onClick={() =>
+                      onRunWorkspaceAction(selectedWorkspace.id, {
+                        action: action as
+                          | "evaluate_feasibility"
+                          | "discover_contacts"
+                          | "draft_outreach"
+                          | "plan_next_steps"
+                          | "refresh_draft",
+                        providerConnectionId: proposalActionProviderConnectionId,
+                      })
+                    }
+                    style={buttonStyle(busyAction === `proposal-action-${selectedWorkspace.id}-${action}`, "secondary")}
+                    disabled={
+                      !proposalActionProviderConnectionId ||
+                      busyAction === `proposal-action-${selectedWorkspace.id}-${action}`
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div style={subtleCardStyle}>
@@ -1381,8 +1549,11 @@ export function CatalogWorkspaceView({
   busyAction,
   onSelectGrant,
   onToggleBookmark,
+  onSaveGrant,
+  onStartResearch,
   onSaveSchema,
-  onCreateWorkspaceFromGrant,
+  onCreateProposalWorkspace,
+  onCreateProposalJob,
 }: {
   grants: CatalogGrantSummary[];
   selectedGrantId: string | null;
@@ -1390,6 +1561,29 @@ export function CatalogWorkspaceView({
   busyAction: string | null;
   onSelectGrant: (grantId: string) => void;
   onToggleBookmark: (grantId: string, bookmarked: boolean) => void;
+  onSaveGrant: (
+    grantId: string,
+    input: {
+      title: string;
+      sponsor: string;
+      fundingType: string;
+      fitScore: number;
+      whyFit: string;
+      eligibilityNotes: string[];
+      amountSummary: string;
+      deadlineSummary: string;
+      geography: string;
+      status: string;
+      citations: string[];
+      nextActions: string[];
+      tags: string[];
+      provenanceNotes: string | null;
+      freshnessNotes: string | null;
+      pursuitNotes: string | null;
+      lastValidatedAt: string | null;
+    },
+  ) => void;
+  onStartResearch: (grantId: string, input: { researchFocus: string }) => void;
   onSaveSchema: (
     grantId: string,
     input: {
@@ -1398,15 +1592,41 @@ export function CatalogWorkspaceView({
       sections: SectionDefinitionInput[];
     },
   ) => void;
-  onCreateWorkspaceFromGrant: (grantId: string) => void;
+  onCreateProposalWorkspace: (grantId: string) => void;
+  onCreateProposalJob: (grantId: string) => void;
 }) {
   const selectedGrant = grants.find((grant) => grant.id === selectedGrantId) ?? null;
   const detailGrant = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.grant : selectedGrant;
   const detailSchema = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.schema : null;
+  const detailLatestReport = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.latestReport : null;
+  const detailResearchRequests =
+    selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.researchRequests : [];
+  const detailProposalWorkspace =
+    selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.proposalWorkspace : null;
+  const detailProposalJob = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.proposalJob : null;
+  const detailEngagement = selectedGrantDetail?.grant.id === selectedGrantId ? selectedGrantDetail.engagement : null;
   const [schemaName, setSchemaName] = useState("Grant application draft");
   const [schemaDocumentType, setSchemaDocumentType] = useState<ApplicationDocumentType>("grant_proposal");
   const [schemaSectionsText, setSchemaSectionsText] = useState(toSectionEditorText(createSectionDefinitionsTemplate()));
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [sponsor, setSponsor] = useState("");
+  const [fundingType, setFundingType] = useState("");
+  const [fitScoreText, setFitScoreText] = useState("");
+  const [whyFit, setWhyFit] = useState("");
+  const [eligibilityNotesText, setEligibilityNotesText] = useState("");
+  const [amountSummary, setAmountSummary] = useState("");
+  const [deadlineSummary, setDeadlineSummary] = useState("");
+  const [geography, setGeography] = useState("");
+  const [status, setStatus] = useState("");
+  const [citationsText, setCitationsText] = useState("");
+  const [nextActionsText, setNextActionsText] = useState("");
+  const [tagsText, setTagsText] = useState("");
+  const [provenanceNotes, setProvenanceNotes] = useState("");
+  const [freshnessNotes, setFreshnessNotes] = useState("");
+  const [pursuitNotes, setPursuitNotes] = useState("");
+  const [lastValidatedAt, setLastValidatedAt] = useState("");
+  const [researchFocus, setResearchFocus] = useState("");
 
   useEffect(() => {
     if (!detailGrant) {
@@ -1422,6 +1642,31 @@ export function CatalogWorkspaceView({
     );
     setSchemaError(null);
   }, [detailGrant?.id, detailSchema?.updatedAt]);
+
+  useEffect(() => {
+    if (!detailGrant) {
+      return;
+    }
+
+    setTitle(detailGrant.title);
+    setSponsor(detailGrant.sponsor);
+    setFundingType(detailGrant.fundingType);
+    setFitScoreText(String(detailGrant.fitScore));
+    setWhyFit(detailGrant.whyFit);
+    setEligibilityNotesText(detailGrant.eligibilityNotes.join("\n"));
+    setAmountSummary(detailGrant.amountSummary);
+    setDeadlineSummary(detailGrant.deadlineSummary);
+    setGeography(detailGrant.geography);
+    setStatus(detailGrant.status);
+    setCitationsText(detailGrant.citations.join("\n"));
+    setNextActionsText(detailGrant.nextActions.join("\n"));
+    setTagsText(detailGrant.tags.join(", "));
+    setProvenanceNotes(detailGrant.provenanceNotes ?? "");
+    setFreshnessNotes(detailGrant.freshnessNotes ?? "");
+    setPursuitNotes(detailGrant.pursuitNotes ?? "");
+    setLastValidatedAt(detailGrant.lastValidatedAt ?? "");
+    setResearchFocus(detailResearchRequests[0]?.researchFocus ?? detailGrant.pursuitNotes ?? "");
+  }, [detailGrant?.id, detailGrant?.updatedAt, detailResearchRequests[0]?.updatedAt]);
 
   function submitSchema(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1440,6 +1685,45 @@ export function CatalogWorkspaceView({
     } catch (error) {
       setSchemaError(error instanceof Error ? error.message : "The section definition JSON is invalid.");
     }
+  }
+
+  function submitGrantUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detailGrant) {
+      return;
+    }
+
+    const fitScore = Number.parseInt(fitScoreText, 10);
+    onSaveGrant(detailGrant.id, {
+      title,
+      sponsor,
+      fundingType,
+      fitScore: Number.isNaN(fitScore) ? detailGrant.fitScore : fitScore,
+      whyFit,
+      eligibilityNotes: parseTextList(eligibilityNotesText),
+      amountSummary,
+      deadlineSummary,
+      geography,
+      status,
+      citations: parseTextList(citationsText),
+      nextActions: parseTextList(nextActionsText),
+      tags: parseTextList(tagsText),
+      provenanceNotes: provenanceNotes.trim() ? provenanceNotes.trim() : null,
+      freshnessNotes: freshnessNotes.trim() ? freshnessNotes.trim() : null,
+      pursuitNotes: pursuitNotes.trim() ? pursuitNotes.trim() : null,
+      lastValidatedAt: lastValidatedAt.trim() ? lastValidatedAt.trim() : null,
+    });
+  }
+
+  function submitResearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detailGrant) {
+      return;
+    }
+
+    onStartResearch(detailGrant.id, {
+      researchFocus: researchFocus.trim(),
+    });
   }
 
   return (
@@ -1479,6 +1763,7 @@ export function CatalogWorkspaceView({
                   <StatusBadge label={grant.fundingType} tone="neutral" />
                   <StatusBadge label={grant.isBookmarked ? "Bookmarked" : "Unbookmarked"} tone={grant.isBookmarked ? "good" : "neutral"} />
                   <StatusBadge label={grant.deadlineSummary} tone="neutral" />
+                  <StatusBadge label={grant.sourceType} tone="neutral" />
                 </div>
               </button>
             ))}
@@ -1490,7 +1775,7 @@ export function CatalogWorkspaceView({
 
       <SectionCard
         title={detailGrant ? detailGrant.title : "Catalog detail"}
-        description="Use one place to bookmark the opportunity, curate the schema, and spawn a proposal workspace."
+        description="Use one place to bookmark the opportunity, curate the schema, steer follow-up research, and spawn proposal work."
       >
         {detailGrant ? (
           <div style={{ display: "grid", gap: "1rem" }}>
@@ -1498,6 +1783,10 @@ export function CatalogWorkspaceView({
               <StatusBadge label={detailGrant.fundingType} tone="neutral" />
               <StatusBadge label={detailGrant.amountSummary} tone="neutral" />
               <StatusBadge label={detailGrant.status} tone="neutral" />
+              <StatusBadge label={detailGrant.sourceType} tone="neutral" />
+              {detailGrant.lastValidatedAt ? (
+                <StatusBadge label={`Validated ${formatTimestamp(detailGrant.lastValidatedAt)}`} tone="good" />
+              ) : null}
             </div>
             <div style={subtleCardStyle}>
               <strong>Why it fits</strong>
@@ -1521,23 +1810,285 @@ export function CatalogWorkspaceView({
                 </ul>
               </div>
             </div>
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => onToggleBookmark(detailGrant.id, !detailGrant.isBookmarked)}
-                style={buttonStyle(busyAction === `catalog-bookmark-${detailGrant.id}`, "secondary")}
-                disabled={busyAction === `catalog-bookmark-${detailGrant.id}`}
-              >
-                {detailGrant.isBookmarked ? "Remove bookmark" : "Bookmark grant"}
-              </button>
+            <form onSubmit={submitGrantUpdate} style={formCardStyle}>
+              <h3 style={{ margin: 0 }}>Enrichment</h3>
+              <label>
+                <span>Title</span>
+                <input style={inputStyle} value={title} onChange={(event) => setTitle(event.target.value)} />
+              </label>
+              <label>
+                <span>Sponsor</span>
+                <input style={inputStyle} value={sponsor} onChange={(event) => setSponsor(event.target.value)} />
+              </label>
+              <div style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                <label>
+                  <span>Funding type</span>
+                  <input style={inputStyle} value={fundingType} onChange={(event) => setFundingType(event.target.value)} />
+                </label>
+                <label>
+                  <span>Fit score</span>
+                  <input
+                    style={inputStyle}
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={fitScoreText}
+                    onChange={(event) => setFitScoreText(event.target.value)}
+                  />
+                </label>
+              </div>
+              <label>
+                <span>Why it fits</span>
+                <textarea style={textareaStyle} value={whyFit} onChange={(event) => setWhyFit(event.target.value)} />
+              </label>
+              <label>
+                <span>Eligibility notes</span>
+                <textarea
+                  style={textareaStyle}
+                  value={eligibilityNotesText}
+                  onChange={(event) => setEligibilityNotesText(event.target.value)}
+                />
+              </label>
+              <div style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                <label>
+                  <span>Amount summary</span>
+                  <input style={inputStyle} value={amountSummary} onChange={(event) => setAmountSummary(event.target.value)} />
+                </label>
+                <label>
+                  <span>Deadline summary</span>
+                  <input
+                    style={inputStyle}
+                    value={deadlineSummary}
+                    onChange={(event) => setDeadlineSummary(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                <label>
+                  <span>Geography</span>
+                  <input style={inputStyle} value={geography} onChange={(event) => setGeography(event.target.value)} />
+                </label>
+                <label>
+                  <span>Status</span>
+                  <input style={inputStyle} value={status} onChange={(event) => setStatus(event.target.value)} />
+                </label>
+              </div>
+              <label>
+                <span>Citations</span>
+                <textarea style={textareaStyle} value={citationsText} onChange={(event) => setCitationsText(event.target.value)} />
+              </label>
+              <label>
+                <span>Next actions</span>
+                <textarea
+                  style={textareaStyle}
+                  value={nextActionsText}
+                  onChange={(event) => setNextActionsText(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Tags</span>
+                <input style={inputStyle} value={tagsText} onChange={(event) => setTagsText(event.target.value)} />
+              </label>
+              <label>
+                <span>Provenance notes</span>
+                <textarea
+                  style={textareaStyle}
+                  value={provenanceNotes}
+                  onChange={(event) => setProvenanceNotes(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Freshness notes</span>
+                <textarea
+                  style={textareaStyle}
+                  value={freshnessNotes}
+                  onChange={(event) => setFreshnessNotes(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Pursuit notes</span>
+                <textarea
+                  style={textareaStyle}
+                  value={pursuitNotes}
+                  onChange={(event) => setPursuitNotes(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Last validation timestamp</span>
+                <input style={inputStyle} value={lastValidatedAt} onChange={(event) => setLastValidatedAt(event.target.value)} />
+              </label>
+              <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
                 <button
                   type="button"
-                  onClick={() => onCreateWorkspaceFromGrant(detailGrant.id)}
-                  style={buttonStyle(busyAction === `proposal-create-${detailGrant.id}`)}
-                  disabled={busyAction === `proposal-create-${detailGrant.id}`}
+                  onClick={() => onToggleBookmark(detailGrant.id, !detailGrant.isBookmarked)}
+                  style={buttonStyle(busyAction === `catalog-bookmark-${detailGrant.id}`, "secondary")}
+                  disabled={busyAction === `catalog-bookmark-${detailGrant.id}`}
                 >
-                  Create proposal workspace
+                  {detailGrant.isBookmarked ? "Remove bookmark" : "Bookmark grant"}
                 </button>
+                <button
+                  type="submit"
+                  style={buttonStyle(busyAction === `catalog-update-${detailGrant.id}`)}
+                  disabled={busyAction === `catalog-update-${detailGrant.id}`}
+                >
+                  Save enrichment
+                </button>
+              </div>
+            </form>
+
+            <form onSubmit={submitResearch} style={formCardStyle}>
+              <h3 style={{ margin: 0 }}>Follow-up research</h3>
+              <label>
+                <span>Research focus</span>
+                <textarea
+                  style={textareaStyle}
+                  value={researchFocus}
+                  onChange={(event) => setResearchFocus(event.target.value)}
+                  placeholder="Ask for a narrower fit check, deadline verification, or sponsor research."
+                />
+              </label>
+              <button
+                type="submit"
+                style={buttonStyle(busyAction === `catalog-research-${detailGrant.id}`)}
+                disabled={busyAction === `catalog-research-${detailGrant.id}` || !researchFocus.trim()}
+              >
+                Start follow-up research
+              </button>
+            </form>
+
+            <div style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+              <div style={subtleCardStyle}>
+                <strong>Latest report</strong>
+                {detailLatestReport ? (
+                  <div style={{ marginTop: "0.5rem", color: "#566154", lineHeight: 1.55 }}>
+                    <div>{detailLatestReport.executiveSummary}</div>
+                    {detailLatestReport.searchSummary ? (
+                      <div style={{ marginTop: "0.45rem" }}>{detailLatestReport.searchSummary}</div>
+                    ) : null}
+                    <div style={{ marginTop: "0.45rem" }}>
+                      {detailLatestReport.opportunityCount} opportunities · {detailLatestReport.rejectedLeads.length} rejected leads
+                    </div>
+                    <div style={{ marginTop: "0.45rem" }}>Updated {formatTimestamp(detailLatestReport.updatedAt)}</div>
+                  </div>
+                ) : (
+                  <p style={{ margin: "0.45rem 0 0", color: "#566154" }}>No report has been attached yet.</p>
+                )}
+              </div>
+
+              <div style={subtleCardStyle}>
+                <strong>Linked proposal workspace</strong>
+                {detailProposalWorkspace ? (
+                  <div style={{ marginTop: "0.5rem", color: "#566154", lineHeight: 1.55 }}>
+                    <div>{detailProposalWorkspace.opportunity.title}</div>
+                    <div>
+                      {detailProposalWorkspace.stage} · {detailProposalWorkspace.opportunity.sourceType}
+                    </div>
+                    <div style={{ marginTop: "0.45rem" }}>{detailProposalWorkspace.summary || "No summary yet."}</div>
+                    <button
+                      type="button"
+                      onClick={() => onCreateProposalWorkspace(detailGrant.id)}
+                      style={{ ...buttonStyle(busyAction === `catalog-proposal-workspace-${detailGrant.id}`), marginTop: "0.75rem" }}
+                      disabled={busyAction === `catalog-proposal-workspace-${detailGrant.id}`}
+                    >
+                      Open proposal workspace
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <p style={{ margin: "0 0 0.75rem", color: "#566154" }}>No proposal workspace is linked yet.</p>
+                    <button
+                      type="button"
+                      onClick={() => onCreateProposalWorkspace(detailGrant.id)}
+                      style={buttonStyle(busyAction === `catalog-proposal-workspace-${detailGrant.id}`)}
+                      disabled={busyAction === `catalog-proposal-workspace-${detailGrant.id}`}
+                    >
+                      Create proposal workspace
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div style={subtleCardStyle}>
+                <strong>Linked proposal job</strong>
+                {detailProposalJob ? (
+                  <div style={{ marginTop: "0.5rem", color: "#566154", lineHeight: 1.55 }}>
+                    <div>{detailProposalJob.title}</div>
+                    <div>
+                      {detailProposalJob.status} · {detailProposalJob.offerCount} offers
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onCreateProposalJob(detailGrant.id)}
+                      style={{ ...buttonStyle(busyAction === `catalog-proposal-job-${detailGrant.id}`), marginTop: "0.75rem" }}
+                      disabled={busyAction === `catalog-proposal-job-${detailGrant.id}`}
+                    >
+                      Open proposal job
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <p style={{ margin: "0 0 0.75rem", color: "#566154" }}>No proposal job is linked yet.</p>
+                    <button
+                      type="button"
+                      onClick={() => onCreateProposalJob(detailGrant.id)}
+                      style={buttonStyle(busyAction === `catalog-proposal-job-${detailGrant.id}`)}
+                      disabled={busyAction === `catalog-proposal-job-${detailGrant.id}`}
+                    >
+                      Create proposal job
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div style={subtleCardStyle}>
+                <strong>Linked engagement</strong>
+                {detailEngagement ? (
+                  <div style={{ marginTop: "0.5rem", color: "#566154", lineHeight: 1.55 }}>
+                    <div>{detailEngagement.specialistName}</div>
+                    <div>
+                      {detailEngagement.status} · ${detailEngagement.amountUsd}
+                    </div>
+                    <div>Catalog grant {detailEngagement.catalogGrantId ?? "not set"}</div>
+                  </div>
+                ) : (
+                  <p style={{ margin: "0.45rem 0 0", color: "#566154" }}>No engagement is linked yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div style={subtleCardStyle}>
+              <strong>Research history</strong>
+              {detailResearchRequests.length ? (
+                <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.55rem" }}>
+                  {detailResearchRequests.map((request) => (
+                    <div key={request.id} style={{ ...subtleCardStyle, background: "rgba(255,255,255,0.72)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap" }}>
+                        <strong>{request.status}</strong>
+                        <span style={{ color: "#566154" }}>{formatTimestamp(request.updatedAt)}</span>
+                      </div>
+                      <div style={{ marginTop: "0.35rem", color: "#566154", lineHeight: 1.5 }}>
+                        {request.progressSummary ?? "No progress summary yet."}
+                      </div>
+                      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+                        <StatusBadge label={request.runPhase} tone="neutral" />
+                        <StatusBadge label={`${request.grantCount} grants`} tone="neutral" />
+                        <StatusBadge label={`${request.activeGrantCount} active`} tone="good" />
+                        {request.researchFocus ? <StatusBadge label={request.researchFocus} tone="neutral" /> : null}
+                      </div>
+                      {request.latestReport ? (
+                        <div style={{ marginTop: "0.55rem", color: "#566154", lineHeight: 1.5 }}>
+                          <div>{request.latestReport.executiveSummary ?? "No executive summary yet."}</div>
+                          {request.latestReport.searchSummary ? (
+                            <div style={{ marginTop: "0.35rem" }}>{request.latestReport.searchSummary}</div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: "0.45rem 0 0", color: "#566154" }}>No follow-up research has been recorded yet.</p>
+              )}
             </div>
 
             <form onSubmit={submitSchema} style={formCardStyle}>
@@ -1595,6 +2146,7 @@ export function CatalogWorkspaceView({
 export function ApplicationWorkspaceView({
   templates,
   workspaces,
+  catalogGrants,
   providerConnections,
   busyAction,
   onCreateTemplate,
@@ -1605,6 +2157,7 @@ export function ApplicationWorkspaceView({
 }: {
   templates: ApplicationTemplateSummary[];
   workspaces: ApplicationWorkspaceSummary[];
+  catalogGrants: CatalogGrantSummary[];
   providerConnections: ProviderConnectionSummary[];
   busyAction: string | null;
   onCreateTemplate: (input: {
@@ -1613,6 +2166,7 @@ export function ApplicationWorkspaceView({
     sections: SectionDefinitionInput[];
   }) => void;
   onCreateWorkspace: (input: {
+    catalogGrantId?: string | null;
     templateId: string | null;
     documentType: ApplicationDocumentType;
   }) => void;
@@ -1627,6 +2181,7 @@ export function ApplicationWorkspaceView({
   );
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [workspaceTemplateId, setWorkspaceTemplateId] = useState<string>("");
+  const [workspaceCatalogGrantId, setWorkspaceCatalogGrantId] = useState<string>("");
   const [workspaceDocumentType, setWorkspaceDocumentType] = useState<ApplicationDocumentType>("grant_proposal");
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [sectionDrafts, setSectionDrafts] = useState<Record<string, string>>({});
@@ -1653,6 +2208,16 @@ export function ApplicationWorkspaceView({
       setSelectedWorkspaceId(workspaces[0]?.id ?? null);
     }
   }, [workspaces, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!workspaceCatalogGrantId) {
+      return;
+    }
+
+    if (!catalogGrants.some((grant) => grant.id === workspaceCatalogGrantId)) {
+      setWorkspaceCatalogGrantId("");
+    }
+  }, [catalogGrants, workspaceCatalogGrantId]);
 
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
 
@@ -1685,6 +2250,7 @@ export function ApplicationWorkspaceView({
   function submitWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     onCreateWorkspace({
+      catalogGrantId: workspaceCatalogGrantId || null,
       templateId: workspaceTemplateId || null,
       documentType: workspaceDocumentType,
     });
@@ -1735,6 +2301,21 @@ export function ApplicationWorkspaceView({
           description="Launch a working draft from a saved template or start from an empty document type."
         >
           <form onSubmit={submitWorkspace} style={formCardStyle}>
+            <label>
+              <span>Catalog-backed source</span>
+              <select
+                style={inputStyle}
+                value={workspaceCatalogGrantId}
+                onChange={(event) => setWorkspaceCatalogGrantId(event.target.value)}
+              >
+                <option value="">No catalog grant</option>
+                {catalogGrants.map((grant) => (
+                  <option key={grant.id} value={grant.id}>
+                    {grant.title} ({grant.sponsor})
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               <span>Template</span>
               <select
@@ -2044,7 +2625,7 @@ export function ProviderWorkspaceView({
           </label>
           <div style={{ display: "grid", gap: "0.5rem" }}>
             <strong>Allowed artifact types</strong>
-            {(["grant_catalog_entry", "application_workspace", "workspace_section"] as ProviderArtifactType[]).map((artifactType) => (
+            {(["grant_catalog_entry", "application_workspace", "workspace_section", "proposal_workspace"] as ProviderArtifactType[]).map((artifactType) => (
               <label key={artifactType} style={{ display: "flex", gap: "0.55rem", alignItems: "center" }}>
                 <input
                   checked={allowedArtifactTypes.includes(artifactType)}

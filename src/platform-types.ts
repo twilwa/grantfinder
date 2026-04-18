@@ -19,7 +19,7 @@ export type OrganizationOperatingScope = "local" | "regional" | "national" | "in
 export type OrganizationPersonnelAccessState = "none" | "invited" | "active";
 export type ResearchRequestStatus = "draft" | "running" | "completed" | "failed";
 export type GrantQueueState = "active" | "inactive";
-export type GrantCatalogSourceType = "promoted" | "curated";
+export type GrantCatalogSourceType = "promoted" | "curated" | "research";
 export type ApplicationWorkspaceState = "draft" | "proposal";
 export type ProposalWorkspaceStage =
   | "qualifying"
@@ -29,7 +29,7 @@ export type ProposalWorkspaceStage =
   | "awarded"
   | "declined"
   | "no_bid";
-export type ProposalOpportunitySourceType = "tracked_grant" | "manual";
+export type ProposalOpportunitySourceType = "tracked_grant" | "catalog_grant" | "manual";
 export type ProposalFeasibilityConfidence = "high" | "medium" | "low";
 export type ProposalOutcomeStatus = "submitted" | "awarded" | "declined" | "no_bid";
 export type ProposalOutreachKind = "email" | "call" | "meeting" | "note" | "other";
@@ -156,6 +156,7 @@ export interface PlatformJob {
   requesterId: string;
   type: JobType;
   grantId: string | null;
+  catalogGrantId: string | null;
   targetType: ServiceTargetType | null;
   targetId: string | null;
   specialistRole: SpecialistServiceRole | null;
@@ -217,6 +218,8 @@ export interface PlatformResearchRequest {
   id: string;
   requesterId: string;
   scenarioId: string;
+  sourceCatalogGrantId: string | null;
+  researchFocus: string | null;
   organizationPrefill: PlatformOrganizationPrefill | null;
   status: ResearchRequestStatus;
   runPhase: ResearchRunPhase;
@@ -236,6 +239,7 @@ export interface PlatformTrackedGrant {
   id: string;
   requestId: string;
   requesterId: string;
+  catalogGrantId: string | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -275,6 +279,7 @@ export interface PlatformGrantCatalogEntry {
   sourceType: GrantCatalogSourceType;
   sourceGrantId: string | null;
   sourceReportId: string | null;
+  lastResearchRequestId: string | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -288,6 +293,10 @@ export interface PlatformGrantCatalogEntry {
   citations: string[];
   nextActions: string[];
   tags: string[];
+  provenanceNotes: string | null;
+  freshnessNotes: string | null;
+  pursuitNotes: string | null;
+  lastValidatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -411,6 +420,7 @@ export interface PlatformProposalWorkspace {
   ownerUserId: string;
   organizationId: string | null;
   trackedGrantId: string | null;
+  catalogGrantId: string | null;
   opportunity: PlatformProposalOpportunity;
   stage: ProposalWorkspaceStage;
   summary: string;

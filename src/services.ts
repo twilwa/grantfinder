@@ -154,6 +154,26 @@ interface CreateOfferInput {
   specialistRole?: SpecialistServiceRole | null;
 }
 
+interface UpdateCatalogGrantInput {
+  title?: string;
+  sponsor?: string;
+  fundingType?: string;
+  fitScore?: number;
+  whyFit?: string;
+  eligibilityNotes?: string[];
+  amountSummary?: string;
+  deadlineSummary?: string;
+  geography?: string;
+  status?: string;
+  citations?: string[];
+  nextActions?: string[];
+  tags?: string[];
+  provenanceNotes?: string | null;
+  freshnessNotes?: string | null;
+  pursuitNotes?: string | null;
+  lastValidatedAt?: string | null;
+}
+
 interface UpsertGrantApplicationSchemaInput {
   name: string;
   documentType: ApplicationDocumentType;
@@ -180,6 +200,7 @@ interface CreateApplicationWorkspaceInput {
 
 interface CreateProposalWorkspaceInput {
   trackedGrantId?: string | null;
+  catalogGrantId?: string | null;
   manualOpportunity?: {
     title: string;
     sponsor: string;
@@ -262,6 +283,7 @@ interface DashboardOffer extends PlatformOffer {
 }
 
 interface DashboardEngagement extends PlatformEngagement {
+  catalogGrantId: string | null;
   requesterName: string;
   specialistName: string;
   jobTitle: string;
@@ -318,6 +340,13 @@ export type FundingResearchSessionFactory = (
 interface ResearchRequestRunResult {
   request: PlatformResearchRequest;
   grants: PlatformTrackedGrant[];
+}
+
+interface CatalogGrantProposalContext {
+  trackedGrant: PlatformTrackedGrant | null;
+  proposalWorkspace: PlatformProposalWorkspace | null;
+  proposalJob: PlatformJob | null;
+  engagement: PlatformEngagement | null;
 }
 
 export interface ResearchRequestDetail extends WorkspaceRequest {
@@ -478,6 +507,7 @@ export class ApplicationServices {
       sourceType: grant.sourceType,
       sourceGrantId: grant.sourceGrantId,
       sourceReportId: grant.sourceReportId,
+      lastResearchRequestId: grant.lastResearchRequestId,
       title: grant.title,
       sponsor: grant.sponsor,
       fundingType: grant.fundingType,
@@ -491,6 +521,10 @@ export class ApplicationServices {
       citations: [...grant.citations],
       nextActions: [...grant.nextActions],
       tags: [...grant.tags],
+      provenanceNotes: grant.provenanceNotes,
+      freshnessNotes: grant.freshnessNotes,
+      pursuitNotes: grant.pursuitNotes,
+      lastValidatedAt: grant.lastValidatedAt,
       isBookmarked,
       createdAt: grant.createdAt,
       updatedAt: grant.updatedAt,
@@ -584,6 +618,7 @@ export class ApplicationServices {
     const proposalJob = workspace.proposalJobId
       ? state.jobs.find((candidate) => candidate.id === workspace.proposalJobId) ?? null
       : null;
+    const catalogGrantId = workspace.catalogGrantId ?? proposalJob?.catalogGrantId ?? null;
     const engagement = workspace.engagementId
       ? state.engagements.find((candidate) => candidate.id === workspace.engagementId) ?? null
       : proposalJob
@@ -595,6 +630,7 @@ export class ApplicationServices {
       ownerUserId: workspace.ownerUserId,
       organizationId: workspace.organizationId,
       trackedGrantId: workspace.trackedGrantId,
+      catalogGrantId,
       opportunity: {
         ...workspace.opportunity,
       },
@@ -630,24 +666,38 @@ export class ApplicationServices {
             finalizedAt: primaryApplicationWorkspace.finalizedAt,
           }
         : null,
-      proposalJob: proposalJob
-        ? {
-            id: proposalJob.id,
-            status: proposalJob.status,
-            title: proposalJob.title,
-            createdAt: proposalJob.createdAt,
-          }
-        : null,
-      engagement: engagement
-        ? {
-            id: engagement.id,
-            status: engagement.status,
-            createdAt: engagement.createdAt,
-            fundedAt: engagement.fundedAt,
-          }
-        : null,
+      proposalJob: this.toPublicProposalJobSummary(proposalJob, catalogGrantId),
+      engagement: this.toPublicEngagementSummary(engagement, catalogGrantId),
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
+    };
+  }
+
+  private toPublicProposalJobSummary(job: PlatformJob | null, catalogGrantId: string | null) {
+    if (!job) {
+      return null;
+    }
+
+    return {
+      id: job.id,
+      grantId: job.grantId,
+      catalogGrantId: job.catalogGrantId ?? catalogGrantId,
+      targetType: job.targetType,
+      targetId: job.targetId,
+      status: job.status,
+      title: job.title,
+      createdAt: job.createdAt,
+    };
+  }
+
+  private toPublicEngagementSummary(engagement: PlatformEngagement | null, catalogGrantId: string | null) {
+    if (!engagement) {
+      return null;
+    }
+
+    return {
+      ...engagement,
+      catalogGrantId,
     };
   }
 
@@ -979,6 +1029,8 @@ export class ApplicationServices {
       id: makeId("request"),
       requesterId: user.id,
       scenarioId: scenario.id,
+      sourceCatalogGrantId: null,
+      researchFocus: null,
       organizationPrefill,
       status: "draft",
       runPhase: "idle",
@@ -1059,6 +1111,13 @@ export class ApplicationServices {
       await this.loadScenarioForUser(user, runningRequest.scenarioId),
       runningRequest.organizationPrefill,
     );
+    const scenarioWithCatalogContext = runningRequest.sourceCatalogGrantId
+      ? this.attachCatalogGrantContextToScenario(
+          scenario,
+          await this.requireCatalogGrant(runningRequest.sourceCatalogGrantId),
+          runningRequest.researchFocus,
+        )
+      : scenario;
     this.activeResearchRuns.set(request.id, {
       session: null,
       queuedSteeringIds: [],
@@ -1067,8 +1126,8 @@ export class ApplicationServices {
       acceptsSteering: Boolean(this.researchSessionFactory),
     });
     const activeRun = this.researchSessionFactory
-      ? this.startInteractiveResearchRun(runningRequest, scenario)
-      : this.startBlockingResearchRun(runningRequest, scenario);
+      ? this.startInteractiveResearchRun(runningRequest, scenarioWithCatalogContext)
+      : this.startBlockingResearchRun(runningRequest, scenarioWithCatalogContext);
 
     this.activeResearchRuns.set(request.id, activeRun);
 
@@ -1271,13 +1330,15 @@ export class ApplicationServices {
       );
     }
 
-    const existingEntry = await this.store.findGrantCatalogEntryBySourceGrantId(grant.id);
+    const state = await this.store.readState();
+    const existingEntry = this.findMatchingCatalogEntry(state.grantCatalogEntries, grant);
     const catalogEntry: PlatformGrantCatalogEntry = {
       id: existingEntry?.id ?? makeId("catalog"),
       createdByUserId: existingEntry?.createdByUserId ?? user.id,
-      sourceType: "promoted",
+      sourceType: existingEntry?.sourceType === "curated" ? "curated" : "promoted",
       sourceGrantId: grant.id,
       sourceReportId: report.id,
+      lastResearchRequestId: existingEntry?.lastResearchRequestId ?? grant.requestId,
       title: grant.title,
       sponsor: grant.sponsor,
       fundingType: grant.fundingType,
@@ -1290,12 +1351,23 @@ export class ApplicationServices {
       status: grant.status,
       citations: [...grant.citations],
       nextActions: [...grant.nextActions],
-      tags: this.buildCatalogTags(grant),
+      tags: this.mergeCatalogTags(existingEntry?.tags ?? [], this.buildCatalogTags(grant)),
+      provenanceNotes: existingEntry?.provenanceNotes ?? null,
+      freshnessNotes: existingEntry?.freshnessNotes ?? null,
+      pursuitNotes: existingEntry?.pursuitNotes ?? null,
+      lastValidatedAt: existingEntry?.lastValidatedAt ?? null,
       createdAt: existingEntry?.createdAt ?? now(),
       updatedAt: now(),
     };
 
     const savedEntry = await this.store.saveGrantCatalogEntry(catalogEntry);
+    if (grant.catalogGrantId !== savedEntry.id) {
+      await this.store.saveTrackedGrant({
+        ...grant,
+        catalogGrantId: savedEntry.id,
+        updatedAt: now(),
+      });
+    }
     const bookmarked = await this.isCatalogGrantBookmarked(user.id, savedEntry.id);
     return {
       grant: this.toPublicGrantCatalogEntry(savedEntry, bookmarked),
@@ -1325,13 +1397,66 @@ export class ApplicationServices {
   async getCatalogGrant(user: PlatformUser, grantId: string) {
     const grant = await this.requireCatalogGrant(grantId);
     const schema = await this.store.findGrantApplicationSchemaByCatalogGrantId(grant.id);
+    const state = await this.store.readState();
+    const researchRequests = this.listResearchRequestsForCatalogGrant(state, grant.id);
+    const proposalContext = await this.resolveCatalogGrantProposalContext(user, state, grant);
+    const latestReport =
+      researchRequests.length > 0
+        ? state.grantReports.find((report) => report.requestId === researchRequests[0].id) ?? null
+        : null;
     return {
       grant: this.toPublicGrantCatalogEntry(
         grant,
         await this.isCatalogGrantBookmarked(user.id, grant.id),
       ),
       schema: schema ? this.toPublicGrantApplicationSchema(schema) : null,
+      latestReport: latestReport ? this.toPublicGrantReport(latestReport) : null,
+      proposalWorkspace: proposalContext.proposalWorkspace
+        ? this.toPublicProposalWorkspace(proposalContext.proposalWorkspace, state)
+        : null,
+      proposalJob: this.toPublicProposalJobSummary(proposalContext.proposalJob, grant.id),
+      engagement: this.toPublicEngagementSummary(proposalContext.engagement, grant.id),
+      researchRequests: researchRequests.map((request) => ({
+        ...request,
+        grantCount: state.trackedGrants.filter((candidate) => candidate.requestId === request.id).length,
+      })),
     };
+  }
+
+  async startCatalogGrantResearch(
+    user: PlatformUser,
+    grantId: string,
+    input: RunResearchRequestInput & { researchFocus?: string | null } = {},
+  ): Promise<ResearchRequestRunResult> {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireCatalogGrant(grantId);
+    const baseRequest = await this.resolveCatalogGrantResearchBaseRequest(grant);
+    const organizationPrefill =
+      baseRequest.organizationPrefill ?? this.buildOrganizationPrefill(await this.findOrganizationForUser(user));
+    const timestamp = now();
+    const request = await this.store.createResearchRequest({
+      id: makeId("request"),
+      requesterId: user.id,
+      scenarioId: baseRequest.scenarioId,
+      sourceCatalogGrantId: grant.id,
+      researchFocus: this.normalizeOptionalText(input.researchFocus),
+      organizationPrefill,
+      status: "draft",
+      runPhase: "idle",
+      progressSummary: null,
+      runStartedAt: null,
+      latestBrief: null,
+      latestReport: null,
+      errorMessage: null,
+      activity: [],
+      steeringNotes: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      lastRunAt: null,
+    });
+
+    return this.runResearchRequest(user, request.id, { awaitCompletion: input.awaitCompletion });
   }
 
   async setCatalogGrantBookmark(user: PlatformUser, grantId: string, bookmarked: boolean) {
@@ -1340,6 +1465,65 @@ export class ApplicationServices {
     const grant = await this.requireCatalogGrant(grantId);
     return {
       grant: this.toPublicGrantCatalogEntry(grant, isBookmarked),
+    };
+  }
+
+  async updateCatalogGrant(user: PlatformUser, grantId: string, input: UpdateCatalogGrantInput) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireCatalogGrant(grantId);
+    const updatedGrant = await this.store.saveGrantCatalogEntry({
+      ...grant,
+      title: input.title === undefined ? grant.title : requireText(input.title, "title"),
+      sponsor: input.sponsor === undefined ? grant.sponsor : requireText(input.sponsor, "sponsor"),
+      fundingType:
+        input.fundingType === undefined ? grant.fundingType : requireText(input.fundingType, "fundingType"),
+      fitScore:
+        input.fitScore === undefined ? grant.fitScore : this.normalizeCatalogGrantFitScore(input.fitScore),
+      whyFit: input.whyFit === undefined ? grant.whyFit : requireText(input.whyFit, "whyFit"),
+      eligibilityNotes:
+        input.eligibilityNotes === undefined
+          ? [...grant.eligibilityNotes]
+          : normalizeTextList(input.eligibilityNotes, "eligibilityNotes"),
+      amountSummary:
+        input.amountSummary === undefined ? grant.amountSummary : requireText(input.amountSummary, "amountSummary"),
+      deadlineSummary:
+        input.deadlineSummary === undefined
+          ? grant.deadlineSummary
+          : requireText(input.deadlineSummary, "deadlineSummary"),
+      geography: input.geography === undefined ? grant.geography : requireText(input.geography, "geography"),
+      status: input.status === undefined ? grant.status : requireText(input.status, "status"),
+      citations:
+        input.citations === undefined ? [...grant.citations] : normalizeTextList(input.citations, "citations"),
+      nextActions:
+        input.nextActions === undefined
+          ? [...grant.nextActions]
+          : normalizeTextList(input.nextActions, "nextActions"),
+      tags: input.tags === undefined ? [...grant.tags] : this.normalizeCatalogGrantTags(input.tags),
+      provenanceNotes:
+        input.provenanceNotes === undefined
+          ? grant.provenanceNotes
+          : this.normalizeOptionalText(input.provenanceNotes),
+      freshnessNotes:
+        input.freshnessNotes === undefined
+          ? grant.freshnessNotes
+          : this.normalizeOptionalText(input.freshnessNotes),
+      pursuitNotes:
+        input.pursuitNotes === undefined
+          ? grant.pursuitNotes
+          : this.normalizeOptionalText(input.pursuitNotes),
+      lastValidatedAt:
+        input.lastValidatedAt === undefined
+          ? grant.lastValidatedAt
+          : this.normalizeOptionalText(input.lastValidatedAt),
+      updatedAt: now(),
+    });
+
+    return {
+      grant: this.toPublicGrantCatalogEntry(
+        updatedGrant,
+        await this.isCatalogGrantBookmarked(user.id, updatedGrant.id),
+      ),
     };
   }
 
@@ -1593,11 +1777,16 @@ export class ApplicationServices {
       return this.createProposalWorkspaceFromGrant(user, trackedGrantId);
     }
 
+    const catalogGrantId = this.normalizeOptionalText(input.catalogGrantId);
+    if (catalogGrantId) {
+      return this.createProposalWorkspaceFromCatalogGrant(user, catalogGrantId);
+    }
+
     if (!input.manualOpportunity) {
       throw new AppError(
         400,
         "invalid_input",
-        "trackedGrantId or manualOpportunity is required to create proposal work.",
+        "trackedGrantId, catalogGrantId, or manualOpportunity is required to create proposal work.",
       );
     }
 
@@ -1613,6 +1802,7 @@ export class ApplicationServices {
       ownerUserId: user.id,
       organizationId: organization?.id ?? null,
       trackedGrantId: null,
+      catalogGrantId: null,
       opportunity: this.normalizeManualProposalOpportunity(input.manualOpportunity),
       stage: "qualifying",
       summary: "",
@@ -1639,13 +1829,19 @@ export class ApplicationServices {
     this.requireRole(user, "requester");
 
     const grant = await this.requireGrantOwner(user, grantId);
+    const catalogState = await this.store.readState();
+    const catalogGrant =
+      (grant.catalogGrantId
+        ? catalogState.grantCatalogEntries.find((candidate) => candidate.id === grant.catalogGrantId)
+        : null) ??
+      catalogState.grantCatalogEntries.find((candidate) => candidate.sourceGrantId === grant.id) ??
+      null;
     const existing =
       (grant.proposalWorkspaceId ? await this.store.findProposalWorkspaceById(grant.proposalWorkspaceId) : null) ??
       (await this.store.findProposalWorkspaceByTrackedGrantId(grant.id));
     if (existing) {
-      const state = await this.store.readState();
+      const state = catalogState;
       if (!existing.primaryApplicationWorkspaceId) {
-        const catalogGrant = state.grantCatalogEntries.find((candidate) => candidate.sourceGrantId === grant.id) ?? null;
         const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
           title: this.buildProposalWorkspaceTitle(grant.title),
           documentType: grant.fundingType === "rfp" ? "other" : "grant_proposal",
@@ -1653,7 +1849,20 @@ export class ApplicationServices {
         });
         const linkedWorkspace = await this.store.saveProposalWorkspace({
           ...existing,
+          catalogGrantId: existing.catalogGrantId ?? catalogGrant?.id ?? grant.catalogGrantId,
           primaryApplicationWorkspaceId: primaryApplicationWorkspace.id,
+          updatedAt: now(),
+        });
+        const nextState = await this.store.readState();
+        return {
+          workspace: this.toPublicProposalWorkspace(linkedWorkspace, nextState),
+          created: false,
+        };
+      }
+      if (!existing.catalogGrantId && (catalogGrant?.id ?? grant.catalogGrantId)) {
+        const linkedWorkspace = await this.store.saveProposalWorkspace({
+          ...existing,
+          catalogGrantId: catalogGrant?.id ?? grant.catalogGrantId ?? null,
           updatedAt: now(),
         });
         const nextState = await this.store.readState();
@@ -1670,9 +1879,6 @@ export class ApplicationServices {
 
     const organization = await this.findOrganizationForUser(user);
     const timestamp = now();
-    const catalogGrant = (await this.store.readState()).grantCatalogEntries.find(
-      (candidate) => candidate.sourceGrantId === grant.id,
-    );
     const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
       title: this.buildProposalWorkspaceTitle(grant.title),
       documentType: "grant_proposal",
@@ -1683,6 +1889,7 @@ export class ApplicationServices {
       ownerUserId: user.id,
       organizationId: organization?.id ?? null,
       trackedGrantId: grant.id,
+      catalogGrantId: catalogGrant?.id ?? grant.catalogGrantId,
       opportunity: {
         sourceType: "tracked_grant",
         title: grant.title,
@@ -1716,6 +1923,110 @@ export class ApplicationServices {
     const state = await this.store.readState();
     return {
       workspace: this.toPublicProposalWorkspace(workspace, state),
+      created: true,
+    };
+  }
+
+  async createProposalWorkspaceFromCatalogGrant(user: PlatformUser, catalogGrantId: string) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireCatalogGrant(catalogGrantId);
+    const state = await this.store.readState();
+    const organization = state.organizations.find((candidate) => this.userBelongsToOrganization(candidate, user.id)) ?? null;
+    const proposalContext = await this.resolveCatalogGrantProposalContext(user, state, grant);
+
+    if (proposalContext.proposalWorkspace) {
+      const workspace =
+        !proposalContext.proposalWorkspace.catalogGrantId ||
+        !proposalContext.proposalWorkspace.primaryApplicationWorkspaceId ||
+        (!proposalContext.proposalWorkspace.trackedGrantId && proposalContext.trackedGrant !== null) ||
+        (!proposalContext.proposalWorkspace.engagementId && proposalContext.engagement !== null)
+          ? await this.store.saveProposalWorkspace({
+              ...proposalContext.proposalWorkspace,
+              catalogGrantId: proposalContext.proposalWorkspace.catalogGrantId ?? grant.id,
+              trackedGrantId:
+                proposalContext.proposalWorkspace.trackedGrantId ?? proposalContext.trackedGrant?.id ?? null,
+              primaryApplicationWorkspaceId:
+                proposalContext.proposalWorkspace.primaryApplicationWorkspaceId ??
+                (
+                  await this.createPrimaryApplicationWorkspaceForProposal(user, {
+                    title: this.buildProposalWorkspaceTitle(grant.title),
+                    documentType: grant.fundingType === "rfp" ? "other" : "grant_proposal",
+                    catalogGrant: grant,
+                  })
+                ).id,
+              proposalJobId:
+                proposalContext.proposalWorkspace.proposalJobId ??
+                proposalContext.proposalJob?.id ??
+                null,
+              engagementId:
+                proposalContext.proposalWorkspace.engagementId ??
+                proposalContext.engagement?.id ??
+                null,
+              updatedAt: now(),
+            })
+          : proposalContext.proposalWorkspace;
+      if (proposalContext.trackedGrant && proposalContext.trackedGrant.proposalWorkspaceId !== workspace.id) {
+        await this.store.saveTrackedGrant({
+          ...proposalContext.trackedGrant,
+          proposalWorkspaceId: workspace.id,
+          updatedAt: now(),
+        });
+      }
+      const nextState = await this.store.readState();
+      return {
+        workspace: this.toPublicProposalWorkspace(workspace, nextState),
+        created: false,
+      };
+    }
+
+    const timestamp = now();
+    const primaryApplicationWorkspace = await this.createPrimaryApplicationWorkspaceForProposal(user, {
+      title: this.buildProposalWorkspaceTitle(grant.title),
+      documentType: grant.fundingType === "rfp" ? "other" : "grant_proposal",
+      catalogGrant: grant,
+    });
+    const workspace = await this.store.createProposalWorkspace({
+      id: makeId("proposal"),
+      ownerUserId: user.id,
+      organizationId: organization?.id ?? null,
+      trackedGrantId: proposalContext.trackedGrant?.id ?? null,
+      catalogGrantId: grant.id,
+      opportunity: {
+        sourceType: "catalog_grant",
+        title: grant.title,
+        sponsor: grant.sponsor,
+        fundingType: grant.fundingType,
+        amountSummary: grant.amountSummary,
+        deadlineSummary: grant.deadlineSummary,
+        geography: grant.geography,
+        sourceUrl: null,
+        notes: grant.pursuitNotes ?? grant.whyFit,
+      },
+      stage: "qualifying",
+      summary: "",
+      nextSteps: [...grant.nextActions],
+      openQuestions: [],
+      primaryApplicationWorkspaceId: primaryApplicationWorkspace.id,
+      feasibilitySnapshot: null,
+      contacts: [],
+      outreachEvents: [],
+      outcome: null,
+      proposalJobId: proposalContext.proposalJob?.id ?? null,
+      engagementId: proposalContext.engagement?.id ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    if (proposalContext.trackedGrant && proposalContext.trackedGrant.proposalWorkspaceId !== workspace.id) {
+      await this.store.saveTrackedGrant({
+        ...proposalContext.trackedGrant,
+        proposalWorkspaceId: workspace.id,
+        updatedAt: timestamp,
+      });
+    }
+    const nextState = await this.store.readState();
+    return {
+      workspace: this.toPublicProposalWorkspace(workspace, nextState),
       created: true,
     };
   }
@@ -1969,6 +2280,7 @@ export class ApplicationServices {
       requesterId: user.id,
       type: "grant_proposal",
       grantId: grant.id,
+      catalogGrantId: grant.catalogGrantId,
       targetType: null,
       targetId: null,
       specialistRole: null,
@@ -2002,6 +2314,102 @@ export class ApplicationServices {
     return {
       job: createdJob,
       grant: updatedGrant,
+    };
+  }
+
+  async createProposalJobFromCatalogGrant(user: PlatformUser, catalogGrantId: string) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireCatalogGrant(catalogGrantId);
+    const state = await this.store.readState();
+    const proposalContext = await this.resolveCatalogGrantProposalContext(user, state, grant);
+
+    if (proposalContext.proposalWorkspace) {
+      const hadJob = Boolean(proposalContext.proposalJob);
+      const job = await this.createOrAttachProposalJobForWorkspace(
+        user,
+        proposalContext.proposalWorkspace,
+        proposalContext.trackedGrant,
+      );
+      const nextState = await this.store.readState();
+      const nextWorkspace =
+        nextState.proposalWorkspaces.find((candidate) => candidate.id === proposalContext.proposalWorkspace?.id) ??
+        proposalContext.proposalWorkspace;
+      const nextGrant = proposalContext.trackedGrant
+        ? nextState.trackedGrants.find((candidate) => candidate.id === proposalContext.trackedGrant?.id) ??
+          proposalContext.trackedGrant
+        : null;
+      const engagement = nextState.engagements.find((candidate) => candidate.jobId === job.id) ?? null;
+
+      return {
+        job: {
+          ...job,
+          catalogGrantId: job.catalogGrantId ?? grant.id,
+        },
+        grant: nextGrant,
+        workspace: this.toPublicProposalWorkspace(nextWorkspace, nextState),
+        engagement: this.toPublicEngagementSummary(engagement, grant.id),
+        created: !hadJob,
+      };
+    }
+
+    if (proposalContext.proposalJob) {
+      const savedJob =
+        proposalContext.proposalJob.catalogGrantId === grant.id
+          ? proposalContext.proposalJob
+          : await this.store.saveJob({
+              ...proposalContext.proposalJob,
+              catalogGrantId: grant.id,
+            });
+      const nextState = await this.store.readState();
+      const nextGrant = proposalContext.trackedGrant
+        ? nextState.trackedGrants.find((candidate) => candidate.id === proposalContext.trackedGrant?.id) ??
+          proposalContext.trackedGrant
+        : null;
+
+      return {
+        job: savedJob,
+        grant: nextGrant,
+        workspace: null,
+        engagement: this.toPublicEngagementSummary(proposalContext.engagement, grant.id),
+        created: false,
+      };
+    }
+
+    const timestamp = now();
+    const job = await this.store.createJob({
+      id: makeId("job"),
+      requesterId: user.id,
+      type: "grant_proposal",
+      grantId: proposalContext.trackedGrant?.id ?? null,
+      catalogGrantId: grant.id,
+      targetType: "grant_catalog_entry",
+      targetId: grant.id,
+      specialistRole: null,
+      title: `Grant proposal for ${grant.title}`,
+      description: [
+        `Prepare and submit a proposal for ${grant.title}.`,
+        `Sponsor: ${grant.sponsor}.`,
+        `Why it fits: ${grant.pursuitNotes ?? grant.whyFit}`,
+      ].join(" "),
+      fundingNeed: `${grant.fundingType} proposal and submission support`,
+      status: "open",
+      createdAt: timestamp,
+    });
+    const updatedGrant = proposalContext.trackedGrant
+      ? await this.store.saveTrackedGrant({
+          ...proposalContext.trackedGrant,
+          proposalJobId: job.id,
+          updatedAt: timestamp,
+        })
+      : null;
+
+    return {
+      job,
+      grant: updatedGrant,
+      workspace: null,
+      engagement: null,
+      created: true,
     };
   }
 
@@ -2047,6 +2455,7 @@ export class ApplicationServices {
       requesterId: user.id,
       type: "general",
       grantId: null,
+      catalogGrantId: null,
       targetType,
       targetId,
       specialistRole:
@@ -2073,21 +2482,36 @@ export class ApplicationServices {
     if (existingJobId) {
       const existingJob = await this.store.findJobById(existingJobId);
       if (existingJob) {
+        const nextJob: PlatformJob = {
+          ...existingJob,
+          grantId: existingJob.grantId ?? grant?.id ?? workspace.trackedGrantId,
+          catalogGrantId:
+            existingJob.catalogGrantId ?? workspace.catalogGrantId ?? grant?.catalogGrantId ?? null,
+          targetType: "proposal_workspace",
+          targetId: workspace.id,
+        };
+        const persistedJob =
+          nextJob.grantId !== existingJob.grantId ||
+          nextJob.catalogGrantId !== existingJob.catalogGrantId ||
+          nextJob.targetType !== existingJob.targetType ||
+          nextJob.targetId !== existingJob.targetId
+            ? await this.store.saveJob(nextJob)
+            : existingJob;
         if (workspace.proposalJobId !== existingJob.id) {
           await this.store.saveProposalWorkspace({
             ...workspace,
-            proposalJobId: existingJob.id,
+            proposalJobId: persistedJob.id,
             updatedAt: timestamp,
           });
         }
-        if (grant && grant.proposalJobId !== existingJob.id) {
+        if (grant && grant.proposalJobId !== persistedJob.id) {
           await this.store.saveTrackedGrant({
             ...grant,
-            proposalJobId: existingJob.id,
+            proposalJobId: persistedJob.id,
             updatedAt: timestamp,
           });
         }
-        return existingJob;
+        return persistedJob;
       }
     }
 
@@ -2096,6 +2520,7 @@ export class ApplicationServices {
       requesterId: user.id,
       type: "grant_proposal",
       grantId: grant?.id ?? workspace.trackedGrantId,
+      catalogGrantId: workspace.catalogGrantId ?? grant?.catalogGrantId ?? null,
       targetType: "proposal_workspace",
       targetId: workspace.id,
       specialistRole: null,
@@ -2188,12 +2613,18 @@ export class ApplicationServices {
       throw new AppError(500, "accept_failed", "The offer could not be accepted.");
     }
 
-    return { engagement };
+    return {
+      engagement: this.toPublicEngagementSummary(engagement, job.catalogGrantId ?? null),
+    };
   }
 
   async getEngagement(user: PlatformUser, engagementId: string) {
     const engagement = await this.requireEngagementViewer(user, engagementId);
-    return { engagement };
+    const state = await this.store.readState();
+    const job = state.jobs.find((candidate) => candidate.id === engagement.jobId) ?? null;
+    return {
+      engagement: this.toPublicEngagementSummary(engagement, job?.catalogGrantId ?? null),
+    };
   }
 
   async getFundingChallenge(
@@ -2242,7 +2673,11 @@ export class ApplicationServices {
       throw new AppError(500, "fund_failed", "The engagement funding record could not be stored.");
     }
 
-    return { engagement: funded };
+    const state = await this.store.readState();
+    const job = state.jobs.find((candidate) => candidate.id === funded.jobId) ?? null;
+    return {
+      engagement: this.toPublicEngagementSummary(funded, job?.catalogGrantId ?? null),
+    };
   }
 
   async getDashboardData(): Promise<DashboardData> {
@@ -2474,12 +2909,11 @@ export class ApplicationServices {
 
     const state = await this.store.readState();
     const existingGrants = state.trackedGrants.filter((grant) => grant.requestId === completedRequest.id);
-    const grants = result.report.opportunities.map((opportunity) =>
+    const draftGrants = result.report.opportunities.map((opportunity) =>
       this.toTrackedGrant(completedRequest, opportunity, existingGrants),
     );
-    const savedGrants = await this.store.replaceTrackedGrants(completedRequest.id, grants);
     const existingReport = await this.store.findGrantReportByRequestId(completedRequest.id);
-    await this.store.upsertGrantReport({
+    const savedReport = await this.store.upsertGrantReport({
       id: existingReport?.id ?? makeId("report"),
       requestId: completedRequest.id,
       requesterId: completedRequest.requesterId,
@@ -2500,6 +2934,22 @@ export class ApplicationServices {
       createdAt: existingReport?.createdAt ?? completedAt,
       updatedAt: completedAt,
     });
+    const knownCatalogEntries = [...state.grantCatalogEntries];
+    const grants: PlatformTrackedGrant[] = [];
+    for (const grant of draftGrants) {
+      const savedCatalogEntry = await this.upsertCatalogEntryFromResearch(
+        completedRequest,
+        savedReport,
+        grant,
+        knownCatalogEntries,
+        completedAt,
+      );
+      grants.push({
+        ...grant,
+        catalogGrantId: savedCatalogEntry.id,
+      });
+    }
+    const savedGrants = await this.store.replaceTrackedGrants(completedRequest.id, grants);
 
     return {
       request: completedRequest,
@@ -3064,13 +3514,14 @@ export class ApplicationServices {
 
   private buildDashboardEngagements(state: PlatformState): DashboardEngagement[] {
     const userNames = new Map(state.users.map((user) => [user.id, user.name]));
-    const jobTitles = new Map(state.jobs.map((job) => [job.id, job.title]));
+    const jobsById = new Map(state.jobs.map((job) => [job.id, job]));
     return state.engagements
       .map((engagement) => ({
         ...engagement,
+        catalogGrantId: jobsById.get(engagement.jobId)?.catalogGrantId ?? null,
         requesterName: userNames.get(engagement.requesterId) ?? "Unknown requester",
         specialistName: userNames.get(engagement.specialistId) ?? "Unknown specialist",
-        jobTitle: jobTitles.get(engagement.jobId) ?? "Unknown job",
+        jobTitle: jobsById.get(engagement.jobId)?.title ?? "Unknown job",
       }))
       .sort(byCreatedAt);
   }
@@ -3122,6 +3573,135 @@ export class ApplicationServices {
     };
   }
 
+  private attachCatalogGrantContextToScenario(
+    scenario: BusinessScenario,
+    grant: PlatformGrantCatalogEntry,
+    researchFocus: string | null,
+  ): BusinessScenario {
+    const focusParts = [
+      `Target opportunity: ${grant.title} from ${grant.sponsor}.`,
+      researchFocus ? `Follow-up focus: ${researchFocus}.` : null,
+      grant.whyFit ? `Current fit note: ${grant.whyFit}.` : null,
+    ].filter(Boolean);
+
+    return {
+      ...scenario,
+      summary: `${scenario.summary} ${focusParts.join(" ")}`.trim(),
+      needs: [...scenario.needs, `Follow up on ${grant.title}`],
+      tags: [...new Set([...scenario.tags, "catalog-follow-up", grant.fundingType.toLowerCase()])],
+    };
+  }
+
+  private async resolveCatalogGrantResearchBaseRequest(
+    grant: PlatformGrantCatalogEntry,
+  ): Promise<PlatformResearchRequest> {
+    if (grant.lastResearchRequestId) {
+      const request = await this.store.findResearchRequestById(grant.lastResearchRequestId);
+      if (request) {
+        return request;
+      }
+    }
+
+    if (grant.sourceGrantId) {
+      const trackedGrant = await this.store.findTrackedGrantById(grant.sourceGrantId);
+      if (trackedGrant) {
+        const request = await this.store.findResearchRequestById(trackedGrant.requestId);
+        if (request) {
+          return request;
+        }
+      }
+    }
+
+    throw new AppError(
+      409,
+      "catalog_research_context_missing",
+      "This durable opportunity does not yet have enough research context to start a follow-up run.",
+    );
+  }
+
+  private async resolveCatalogGrantProposalContext(
+    user: PlatformUser,
+    state: PlatformState,
+    grant: PlatformGrantCatalogEntry,
+  ): Promise<CatalogGrantProposalContext> {
+    const organization =
+      state.organizations.find((candidate) => this.userBelongsToOrganization(candidate, user.id)) ?? null;
+    const canAccessWorkspace = (workspace: PlatformProposalWorkspace) =>
+      workspace.ownerUserId === user.id || (organization ? workspace.organizationId === organization.id : false);
+    const trackedGrant =
+      (grant.sourceGrantId
+        ? state.trackedGrants.find(
+            (candidate) => candidate.id === grant.sourceGrantId && candidate.requesterId === user.id,
+          ) ?? null
+        : null) ??
+      state.trackedGrants.find(
+        (candidate) => candidate.catalogGrantId === grant.id && candidate.requesterId === user.id,
+      ) ??
+      null;
+    const proposalWorkspace =
+      state.proposalWorkspaces.find(
+        (candidate) => candidate.catalogGrantId === grant.id && canAccessWorkspace(candidate),
+      ) ??
+      (trackedGrant?.proposalWorkspaceId
+        ? state.proposalWorkspaces.find(
+            (candidate) => candidate.id === trackedGrant.proposalWorkspaceId && canAccessWorkspace(candidate),
+          ) ?? null
+        : null) ??
+      (trackedGrant
+        ? state.proposalWorkspaces.find(
+            (candidate) => candidate.trackedGrantId === trackedGrant.id && canAccessWorkspace(candidate),
+          ) ?? null
+        : null);
+    const proposalJob =
+      (proposalWorkspace?.proposalJobId
+        ? state.jobs.find((candidate) => candidate.id === proposalWorkspace.proposalJobId) ?? null
+        : null) ??
+      (trackedGrant?.proposalJobId
+        ? state.jobs.find((candidate) => candidate.id === trackedGrant.proposalJobId) ?? null
+        : null) ??
+      state.jobs.find(
+        (candidate) =>
+          candidate.catalogGrantId === grant.id &&
+          candidate.requesterId === user.id &&
+          candidate.type === "grant_proposal",
+      ) ??
+      (trackedGrant
+        ? state.jobs.find(
+            (candidate) =>
+              candidate.grantId === trackedGrant.id &&
+              candidate.requesterId === user.id &&
+              candidate.type === "grant_proposal",
+          ) ?? null
+        : null);
+    const engagement =
+      (proposalWorkspace?.engagementId
+        ? state.engagements.find((candidate) => candidate.id === proposalWorkspace.engagementId) ?? null
+        : null) ??
+      (proposalJob ? state.engagements.find((candidate) => candidate.jobId === proposalJob.id) ?? null : null);
+
+    return {
+      trackedGrant,
+      proposalWorkspace,
+      proposalJob,
+      engagement,
+    };
+  }
+
+  private listResearchRequestsForCatalogGrant(
+    state: PlatformState,
+    grantId: string,
+  ): PlatformResearchRequest[] {
+    const requestIds = new Set(
+      state.trackedGrants
+        .filter((grant) => grant.catalogGrantId === grantId)
+        .map((grant) => grant.requestId),
+    );
+
+    return state.researchRequests
+      .filter((request) => request.sourceCatalogGrantId === grantId || requestIds.has(request.id))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
   private toTrackedGrant(
     request: PlatformResearchRequest,
     opportunity: FundingOpportunity,
@@ -3137,6 +3717,7 @@ export class ApplicationServices {
       id: existingGrant?.id ?? makeId("grant"),
       requestId: request.id,
       requesterId: request.requesterId,
+      catalogGrantId: existingGrant?.catalogGrantId ?? null,
       title: opportunity.title,
       sponsor: opportunity.sponsor,
       fundingType: opportunity.fundingType,
@@ -3150,6 +3731,7 @@ export class ApplicationServices {
       citations: [...opportunity.citations],
       nextActions: [...opportunity.nextActions],
       queueState: existingGrant?.queueState ?? "active",
+      proposalWorkspaceId: existingGrant?.proposalWorkspaceId ?? null,
       proposalJobId: existingGrant?.proposalJobId ?? null,
       createdAt: existingGrant?.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -3162,6 +3744,82 @@ export class ApplicationServices {
       .filter(Boolean);
 
     return [...new Set(tags)];
+  }
+
+  private async upsertCatalogEntryFromResearch(
+    request: PlatformResearchRequest,
+    report: PlatformGrantReport,
+    grant: PlatformTrackedGrant,
+    knownCatalogEntries: PlatformGrantCatalogEntry[],
+    timestamp: string,
+  ): Promise<PlatformGrantCatalogEntry> {
+    const existingEntry = this.findMatchingCatalogEntry(knownCatalogEntries, grant);
+    const savedEntry = await this.store.saveGrantCatalogEntry({
+      id: existingEntry?.id ?? makeId("catalog"),
+      createdByUserId: existingEntry?.createdByUserId ?? request.requesterId,
+      sourceType: existingEntry?.sourceType ?? "research",
+      sourceGrantId: grant.id,
+      sourceReportId: report.id,
+      lastResearchRequestId: request.id,
+      title: grant.title,
+      sponsor: grant.sponsor,
+      fundingType: grant.fundingType,
+      fitScore: grant.fitScore,
+      whyFit: grant.whyFit,
+      eligibilityNotes: [...grant.eligibilityNotes],
+      amountSummary: grant.amountSummary,
+      deadlineSummary: grant.deadlineSummary,
+      geography: grant.geography,
+      status: grant.status,
+      citations: [...grant.citations],
+      nextActions: [...grant.nextActions],
+      tags: this.mergeCatalogTags(existingEntry?.tags ?? [], this.buildCatalogTags(grant)),
+      provenanceNotes: existingEntry?.provenanceNotes ?? null,
+      freshnessNotes: existingEntry?.freshnessNotes ?? null,
+      pursuitNotes: existingEntry?.pursuitNotes ?? null,
+      lastValidatedAt: existingEntry?.lastValidatedAt ?? null,
+      createdAt: existingEntry?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    });
+    const nextEntries = knownCatalogEntries.filter((entry) => entry.id !== savedEntry.id);
+    nextEntries.unshift(savedEntry);
+    knownCatalogEntries.splice(0, knownCatalogEntries.length, ...nextEntries);
+    return savedEntry;
+  }
+
+  private findMatchingCatalogEntry(
+    entries: PlatformGrantCatalogEntry[],
+    grant: Pick<PlatformTrackedGrant, "id" | "title" | "sponsor">,
+  ): PlatformGrantCatalogEntry | null {
+    return (
+      entries.find((entry) => entry.sourceGrantId === grant.id) ??
+      entries.find(
+        (entry) =>
+          this.normalizeCatalogMatchValue(entry.title) === this.normalizeCatalogMatchValue(grant.title) &&
+          this.normalizeCatalogMatchValue(entry.sponsor) === this.normalizeCatalogMatchValue(grant.sponsor),
+      ) ??
+      null
+    );
+  }
+
+  private mergeCatalogTags(existingTags: string[], nextTags: string[]): string[] {
+    return this.normalizeCatalogGrantTags([...existingTags, ...nextTags]);
+  }
+
+  private normalizeCatalogGrantTags(tags: string[]): string[] {
+    return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+  }
+
+  private normalizeCatalogGrantFitScore(value: number): number {
+    if (!Number.isFinite(value)) {
+      throw new AppError(400, "invalid_input", "fitScore must be a finite number.");
+    }
+
+    return Math.min(100, Math.max(0, Math.round(value)));
+  }
+
+  private normalizeCatalogMatchValue(value: string): string {
+    return value.trim().toLowerCase().replace(/\s+/g, " ");
   }
 
   private buildDefaultWorkspaceSections(

@@ -81,6 +81,7 @@ interface DashboardJob {
   requesterId: string;
   type: "general" | "grant_proposal";
   grantId: string | null;
+  catalogGrantId: string | null;
   title: string;
   description: string;
   fundingNeed: string;
@@ -109,6 +110,7 @@ interface DashboardEngagement {
   jobId: string;
   requesterId: string;
   specialistId: string;
+  catalogGrantId: string | null;
   jobTitle: string;
   requesterName: string;
   specialistName: string;
@@ -207,6 +209,7 @@ interface WorkspaceGrant {
   id: string;
   requestId: string;
   requesterId: string;
+  catalogGrantId: string | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -669,6 +672,69 @@ function PrivyDashboardApp() {
     });
   }
 
+  async function saveCatalogGrant(
+    grantId: string,
+    input: {
+      title: string;
+      sponsor: string;
+      fundingType: string;
+      fitScore: number;
+      whyFit: string;
+      eligibilityNotes: string[];
+      amountSummary: string;
+      deadlineSummary: string;
+      geography: string;
+      status: string;
+      citations: string[];
+      nextActions: string[];
+      tags: string[];
+      provenanceNotes: string | null;
+      freshnessNotes: string | null;
+      pursuitNotes: string | null;
+      lastValidatedAt: string | null;
+    },
+  ) {
+    await runAction(`catalog-update-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/catalog/grants/${grantId}`, {
+          method: "PATCH",
+          body: JSON.stringify(input),
+        }),
+      );
+      setMessage("Catalog grant updated.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId);
+    });
+  }
+
+  async function promoteGrantToCatalog(grantId: string) {
+    await runAction(`catalog-promote-${grantId}`, async () => {
+      const response = await authedFetch(`/api/grants/${grantId}/catalog-entry`, {
+        method: "POST",
+      });
+      const payload = await parseJsonResponse<{ grant: CatalogGrantSummary }>(response);
+      setSelectedCatalogGrantId(payload.grant.id);
+      setMessage("Tracked grant promoted to the catalog.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(payload.grant.id, true);
+      setActiveTab("catalog");
+    });
+  }
+
+  async function startCatalogGrantResearch(grantId: string, input: { researchFocus: string }) {
+    await runAction(`catalog-research-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/catalog/grants/${grantId}/research-requests`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      );
+      setMessage("Follow-up research queued.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId);
+    });
+  }
+
   async function createApplicationTemplate(input: {
     name: string;
     documentType: ApplicationDocumentType;
@@ -717,6 +783,22 @@ function PrivyDashboardApp() {
       setSelectedProposalWorkspaceId(payload.workspace.id);
       setMessage("Proposal workspace created.");
       await refreshWorkspace();
+      setActiveTab("proposal-workspaces");
+    });
+  }
+
+  async function createCatalogProposalWorkspace(grantId: string) {
+    await runAction(`catalog-proposal-workspace-${grantId}`, async () => {
+      const response = await authedFetch(`/api/catalog/grants/${grantId}/proposal-workspace`, {
+        method: "POST",
+      });
+      const payload = await parseJsonResponse<{ workspace: ProposalWorkspaceSummary }>(response);
+      if (payload.workspace?.id) {
+        setSelectedProposalWorkspaceId(payload.workspace.id);
+      }
+      setMessage(response.status === 201 ? "Proposal workspace created." : "Proposal workspace reopened.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId);
       setActiveTab("proposal-workspaces");
     });
   }
@@ -1012,6 +1094,60 @@ function PrivyDashboardApp() {
     });
   }
 
+  async function createCatalogProposalJob(grantId: string) {
+    await runAction(`catalog-proposal-job-${grantId}`, async () => {
+      const response = await authedFetch(`/api/catalog/grants/${grantId}/proposal-job`, {
+        method: "POST",
+      });
+      const payload = await parseJsonResponse<{
+        job: { id: string } | null;
+        grant?: { proposalWorkspaceId?: string | null } | null;
+        workspace?: ProposalWorkspaceSummary | null;
+      }>(response);
+      if (payload.workspace?.id) {
+        setSelectedProposalWorkspaceId(payload.workspace.id);
+      } else if (payload.grant?.proposalWorkspaceId) {
+        setSelectedProposalWorkspaceId(payload.grant.proposalWorkspaceId);
+      }
+      if (payload.job?.id) {
+        setSelectedJobId(payload.job.id);
+      }
+      setMessage(response.status === 201 ? "Proposal job created in the marketplace." : "Proposal job attached in the marketplace.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId);
+      setActiveTab("request-marketplace");
+    });
+  }
+
+  async function runProposalWorkspaceAction(
+    workspaceId: string,
+    input: {
+      action:
+        | "evaluate_feasibility"
+        | "discover_contacts"
+        | "draft_outreach"
+        | "plan_next_steps"
+        | "refresh_draft";
+      providerConnectionId: string;
+    },
+  ) {
+    await runAction(`proposal-action-${workspaceId}-${input.action}`, async () => {
+      const payload = await parseJsonResponse<{
+        workspace: ProposalWorkspaceSummary;
+        execution: AgentExecutionSummary;
+      }>(
+        await authedFetch(`/api/proposal-workspaces/${workspaceId}/actions`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      );
+      setSelectedProposalWorkspaceId(payload.workspace.id);
+      setMessage(payload.execution.outputText);
+      await refreshWorkspace();
+      setActiveTab("proposal-workspaces");
+    });
+  }
+
   const needsProfile = authenticated && session?.user === null;
   const isRequester = session?.user?.role === "requester";
   const isSpecialist = session?.user?.role === "specialist";
@@ -1042,7 +1178,15 @@ function PrivyDashboardApp() {
     catalogGrantDetail && catalogGrantDetail.grant.id === selectedCatalogGrantId
       ? catalogGrantDetail
       : selectedCatalogGrantSummary
-        ? { grant: selectedCatalogGrantSummary, schema: null }
+        ? {
+            grant: selectedCatalogGrantSummary,
+            schema: null,
+            latestReport: null,
+            researchRequests: [],
+            proposalWorkspace: null,
+            proposalJob: null,
+            engagement: null,
+          }
         : null;
   const ownerCanAcceptSelectedOffers = Boolean(
     session?.user && selectedJob && session.user.id === selectedJob.requesterId && isRequester,
@@ -1744,6 +1888,22 @@ function PrivyDashboardApp() {
                 >
                   {selectedGrant.proposalWorkspaceId ? "Open proposal workspace" : "Create proposal workspace"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedGrant.catalogGrantId) {
+                      setSelectedCatalogGrantId(selectedGrant.catalogGrantId);
+                      setActiveTab("catalog");
+                      return;
+                    }
+
+                    void promoteGrantToCatalog(selectedGrant.id);
+                  }}
+                  style={buttonStyle(busyAction === `catalog-promote-${selectedGrant.id}`, "secondary")}
+                  disabled={!isRequester || busyAction === `catalog-promote-${selectedGrant.id}`}
+                >
+                  {selectedGrant.catalogGrantId ? "Open catalog grant" : "Promote to catalog"}
+                </button>
               </div>
               {selectedGrant.proposalJobId ? (
                 <div style={subtleCardStyle}>
@@ -1792,11 +1952,13 @@ function PrivyDashboardApp() {
           grants={grants}
           workspaces={proposalWorkspaces}
           applicationWorkspaces={applicationWorkspaces}
+          providerConnections={providerConnections}
           selectedWorkspaceId={selectedProposalWorkspaceId}
           busyAction={busyAction}
           onCreateWorkspaceFromGrant={(grantId) => void createProposalWorkspaceFromGrant(grantId)}
           onCreateProposalJob={(workspaceId) => void createProposalJobFromWorkspace(workspaceId)}
           onUpdateWorkspace={(workspaceId, input) => void updateProposalWorkspace(workspaceId, input)}
+          onRunWorkspaceAction={(workspaceId, input) => void runProposalWorkspaceAction(workspaceId, input)}
         />
       );
     }
@@ -1810,21 +1972,25 @@ function PrivyDashboardApp() {
         busyAction={busyAction}
         onSelectGrant={setSelectedCatalogGrantId}
         onToggleBookmark={(grantId, bookmarked) => void toggleCatalogBookmark(grantId, bookmarked)}
+        onSaveGrant={(grantId, input) => void saveCatalogGrant(grantId, input)}
+        onStartResearch={(grantId, input) => void startCatalogGrantResearch(grantId, input)}
         onSaveSchema={(grantId, input) => void saveCatalogSchema(grantId, input)}
-        onCreateWorkspaceFromGrant={(grantId) => void createProposalWorkspaceFromGrant(grantId)}
+        onCreateProposalWorkspace={(grantId) => void createCatalogProposalWorkspace(grantId)}
+        onCreateProposalJob={(grantId) => void createCatalogProposalJob(grantId)}
       />
     );
   }
 
   function renderApplicationsTab() {
     return (
-      <ApplicationWorkspaceView
-        templates={applicationTemplates}
-        workspaces={applicationWorkspaces}
-        providerConnections={providerConnections}
-        busyAction={busyAction}
-        onCreateTemplate={(input) => void createApplicationTemplate(input)}
-        onCreateWorkspace={(input) => void createApplicationWorkspace(input)}
+        <ApplicationWorkspaceView
+          templates={applicationTemplates}
+          workspaces={applicationWorkspaces}
+          catalogGrants={catalog}
+          providerConnections={providerConnections}
+          busyAction={busyAction}
+          onCreateTemplate={(input) => void createApplicationTemplate(input)}
+          onCreateWorkspace={(input) => void createApplicationWorkspace(input)}
         onUpdateSection={(workspaceId, sectionId, content) =>
           void updateApplicationWorkspaceSection(workspaceId, sectionId, content)
         }
