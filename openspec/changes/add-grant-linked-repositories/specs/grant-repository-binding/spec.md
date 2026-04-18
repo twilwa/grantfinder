@@ -63,3 +63,32 @@ collaboration and auditability, including the actor and latest update state.
   actor or timestamp metadata
 - **THEN** later reads SHALL expose only the current effective binding while
   retaining the latest traceability fields
+
+### Requirement: Browser users can manage repository bindings
+The system SHALL provide browser controls for authorized users to attach,
+update, clear, open, and inspect GitHub repository bindings for eligible
+grant-backed and manual RFP pursuits.
+
+#### Scenario: Requester attaches a repository from a grant view
+- **WHEN** an authenticated requester opens a tracked-grant or catalog-grant
+  detail view for a grant without a repository binding
+- **THEN** the browser SHALL offer an attach-repository control that captures
+  repository URL, branch, root path, and provider connection configuration
+- **THEN** saving that control SHALL persist the binding through the supported
+  application API
+
+#### Scenario: Requester inspects repository source from a proposal workspace
+- **WHEN** an authenticated requester opens a proposal workspace with an
+  effective repository binding
+- **THEN** the browser SHALL show the linked repository and whether it is
+  inherited from a grant, inherited from a catalog entry, or set directly on the
+  workspace
+- **THEN** the browser SHALL provide an open-repository action for the linked
+  GitHub repository
+
+#### Scenario: Requester clears a workspace-specific override
+- **WHEN** an authenticated requester clears an explicitly overridden proposal
+  workspace repository binding
+- **THEN** the system SHALL remove the workspace-specific binding
+- **THEN** later reads SHALL resolve the inherited grant or catalog repository
+  binding when one is available

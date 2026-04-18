@@ -52,6 +52,13 @@ Application workspaces should expose the effective repository from their linked
 catalog or proposal context rather than persisting a second independent
 repository attachment.
 
+Proposal workspace overrides are allowed only when a user explicitly sets a
+workspace-level repository binding or when the workspace is manual and has no
+grant-backed pursuit record. Grant-backed proposal workspaces otherwise inherit
+from the linked grant or catalog record. Reads must expose the binding source so
+users and agents can tell whether they are using an inherited grant binding or a
+workspace-specific override.
+
 Why this over a proposal-workspace-only model:
 - research outputs happen before proposal work exists
 - the user asked for repository attachment on the grant or RFP itself
@@ -87,7 +94,7 @@ Alternatives considered:
 
 ### Decision: Keep platform records authoritative and treat the repository as a synchronized artifact surface
 
-Research reports, proposal workspace state, application section content, and
+Research reports, durable proposal artifacts, application section content, and
 finalized proposal documents should still be saved in platform persistence
 first. Repository publication should happen after the platform artifact exists,
 and a publication failure should not discard the saved artifact.
@@ -165,19 +172,16 @@ Alternatives considered:
    the effective repository.
 3. Add GitHub publication helpers using provider connections and execution
    logging.
-4. Hook publication into research completion, proposal actions, section
-   generation, and proposal finalization.
-5. Add browser and docs surfaces for attaching repositories and inspecting sync
-   state.
+4. Hook publication into research completion, durable proposal actions, explicit
+   proposal sync, section generation, and proposal finalization.
+5. Add browser and docs surfaces for attaching repositories, opening linked
+   repositories, inspecting binding source, and inspecting sync state.
 
 Rollback strategy:
 - Disable repository publication while leaving the stored binding fields in
   place, so users keep their configuration and platform artifacts remain intact.
 
-## Open Questions
+## Deferred Questions
 
-- Should proposal workspaces be allowed to override a linked grant repository
-  after the grant already has one, or should the grant remain canonical once the
-  pursuit exists?
-- Should repository publication run inline with the existing request or action,
-  or should a later follow-up move publication into a retryable async queue?
+- Should repository publication move into a retryable async queue after the
+  first version proves the artifact layout and audit model?
