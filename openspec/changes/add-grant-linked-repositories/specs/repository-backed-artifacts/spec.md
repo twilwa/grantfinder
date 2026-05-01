@@ -3,14 +3,16 @@
 ### Requirement: Research outputs publish into the effective repository
 The system SHALL publish generated research artifacts into the effective
 repository for a repository-linked grant or opportunity pursuit when a research
-run produces durable output.
+run produces durable output by updating a Grantfinder-managed branch and pull
+request.
 
 #### Scenario: Follow-up research publishes into a linked catalog repository
 - **WHEN** an authenticated requester runs follow-up research from a durable
   catalog grant that has an effective GitHub repository binding
 - **THEN** the system SHALL publish the resulting brief or report artifacts into
   deterministic research paths in that repository
-- **THEN** the system SHALL expose the latest publication result on later reads
+- **THEN** the system SHALL expose the latest branch, pull request, commit, and
+  publication result on later reads
 
 #### Scenario: Repository publication failure does not discard research output
 - **WHEN** a repository-linked research run saves platform output but the GitHub
@@ -20,7 +22,8 @@ run produces durable output.
 
 ### Requirement: Proposal and application outputs publish into the effective repository
 The system SHALL publish durable proposal artifacts, application drafts, and
-finalized proposal documents into the effective repository for the pursuit.
+finalized proposal documents into the effective repository for the pursuit by
+updating the pursuit's Grantfinder branch and pull request.
 
 #### Scenario: Generated application section publishes into the linked repository
 - **WHEN** an authenticated requester generates or refreshes an application
@@ -39,20 +42,28 @@ finalized proposal documents into the effective repository for the pursuit.
   subsequent proposal and application work
 
 ### Requirement: Repository publication uses GitHub write access and audit records
-The system SHALL require compatible GitHub write access for repository
-publication and SHALL record each publication attempt with success or failure
-metadata.
+The system SHALL require compatible GitHub write access from a Privy-linked
+GitHub account for repository publication and SHALL record each publication
+attempt with success or failure metadata.
 
 #### Scenario: Publication succeeds with auditable commit metadata
 - **WHEN** the system successfully publishes a research or proposal artifact into
   the effective repository
 - **THEN** the system SHALL record the publication attempt as an auditable
-  execution with repository path and commit metadata
+  execution with repository path, branch, pull request, and commit metadata
 - **THEN** later reads SHALL expose the latest successful publication state
+
+#### Scenario: Publication updates an existing Grantfinder pull request
+- **WHEN** a repository-linked pursuit already has an open Grantfinder pull
+  request
+- **THEN** the system SHALL publish subsequent research or proposal artifacts to
+  the same Grantfinder branch
+- **THEN** the system SHALL update the existing pull request instead of opening a
+  duplicate pull request for the same pursuit
 
 #### Scenario: Publication is blocked because GitHub write access is missing
 - **WHEN** a repository-linked artifact is ready to publish but no compatible
-  GitHub write connection is available
+  Privy-linked GitHub write connection is available
 - **THEN** the system SHALL leave the platform artifact available for normal
   reads
 - **THEN** the system SHALL expose that repository publication is blocked until
@@ -65,8 +76,10 @@ users and agents coordinate repository-backed grant work.
 #### Scenario: Browser shows successful repository publication
 - **WHEN** an authenticated requester opens a repository-linked grant, proposal,
   or application view after a successful publication
-- **THEN** the browser SHALL show the latest published path and commit metadata
-- **THEN** the browser SHALL provide a path to open the repository target
+- **THEN** the browser SHALL show the latest published path, branch, pull
+  request, and commit metadata
+- **THEN** the browser SHALL provide a path to open the repository target and
+  pull request
 
 #### Scenario: Browser shows blocked repository publication
 - **WHEN** an authenticated requester opens a repository-linked grant, proposal,

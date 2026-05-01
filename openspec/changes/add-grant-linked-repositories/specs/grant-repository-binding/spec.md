@@ -7,22 +7,37 @@ proposal workspaces used for RFP-style pursuits.
 
 #### Scenario: Requester links a repository to a tracked grant
 - **WHEN** an authenticated requester attaches a GitHub repository URL and write
-  configuration to a tracked grant
+  configuration to a tracked grant using a Privy-linked GitHub account
 - **THEN** the system SHALL persist that repository binding on the tracked grant
 - **THEN** later reads of that tracked grant SHALL expose the current binding
 
 #### Scenario: Requester links a repository to a durable catalog grant
 - **WHEN** an authenticated requester attaches a GitHub repository URL and write
-  configuration to a durable catalog grant
+  configuration to a durable catalog grant using a Privy-linked GitHub account
 - **THEN** the system SHALL persist that repository binding on the catalog grant
 - **THEN** later reads of that catalog grant SHALL expose the current binding
 
 #### Scenario: Requester links a repository to a manual RFP pursuit
 - **WHEN** an authenticated requester attaches a GitHub repository URL and write
   configuration to a manual proposal workspace that is not backed by a grant
+  using a Privy-linked GitHub account
 - **THEN** the system SHALL persist that repository binding on the proposal
   workspace
 - **THEN** later reads of that workspace SHALL expose the current binding
+
+#### Scenario: Requester links a repository without choosing a root path
+- **WHEN** an authenticated requester attaches a GitHub repository binding
+  without specifying a repository root path
+- **THEN** the system SHALL use `grantfinder/` as the default root for generated
+  artifacts
+- **THEN** later reads SHALL expose `grantfinder/` as the effective root path
+
+#### Scenario: Requester cannot publish without GitHub-linked credentials
+- **WHEN** an authenticated requester tries to attach a repository for
+  publication without a GitHub account linked through Privy
+- **THEN** the system SHALL keep the platform grant or proposal record unchanged
+- **THEN** the system SHALL report that GitHub account linking is required before
+  repository publication can be enabled
 
 ### Requirement: Downstream workspaces expose one effective repository binding
 The system SHALL resolve one effective repository binding for downstream
@@ -73,7 +88,7 @@ grant-backed and manual RFP pursuits.
 - **WHEN** an authenticated requester opens a tracked-grant or catalog-grant
   detail view for a grant without a repository binding
 - **THEN** the browser SHALL offer an attach-repository control that captures
-  repository URL, branch, root path, and provider connection configuration
+  repository URL, base branch, root path, and GitHub account configuration
 - **THEN** saving that control SHALL persist the binding through the supported
   application API
 

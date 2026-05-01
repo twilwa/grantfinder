@@ -15,12 +15,13 @@ from.
   each pursuit can resolve one effective working repository.
 - Expose repository binding metadata and sync state through browser, REST, and
   JSON-RPC reads and update flows.
-- Publish research-agent outputs into the attached repository using stable file
-  layout conventions.
+- Publish research-agent outputs into the attached repository through a
+  Grantfinder-managed branch and pull request using stable file layout
+  conventions.
 - Publish proposal-workspace artifacts, application drafts, finalized proposal
   documents, and related supporting files into that same repository.
-- Reuse the existing provider-connection and execution-audit model for GitHub
-  write access instead of introducing a second credential path.
+- Use GitHub accounts linked through the Privy login flow for GitHub write
+  access, while preserving provider/execution records for auditability.
 
 ## Capabilities
 

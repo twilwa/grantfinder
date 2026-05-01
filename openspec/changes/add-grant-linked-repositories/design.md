@@ -76,12 +76,14 @@ Alternatives considered:
 The binding should include enough metadata to support deterministic writes and
 clear audit trails:
 - GitHub repository URL
-- default branch
-- optional repository root path for Grantfinder-managed files
-- provider connection identifier used for write access
+- base branch for pull requests
+- optional repository root path for Grantfinder-managed files, defaulting to
+  `grantfinder/`
+- linked Privy GitHub account and provider connection identifiers used for write
+  access and auditability
 - actor and timestamp metadata for who attached or updated the binding
-- latest publication status metadata such as last publish time, commit SHA, and
-  most recent error
+- latest publication status metadata such as last publish time, branch name,
+  pull request URL, commit SHA, and most recent error
 
 Why this over a single string URL:
 - write operations need branch, path, and credential context
@@ -116,6 +118,7 @@ Grantfinder-managed files should land under a predictable root so users and
 agents know where to look and later automation can update the same files
 without fuzzy matching.
 
+When users do not configure a root path, the default root is `grantfinder/`.
 Initial layout:
 - `<root>/research/<request-id>/brief.md`
 - `<root>/research/<request-id>/report.md`
@@ -133,22 +136,40 @@ Why this over title-based file naming:
 - stable IDs avoid path churn and accidental overwrites
 - it keeps later sync logic simple
 
-### Decision: Reuse provider connections and execution records for GitHub publication
+### Decision: Publish via a Grantfinder branch and pull request
 
-GitHub publication should use the existing provider-connection mechanism so the
-system can scope credentials to the user or organization and continue recording
-execution history with a single audit model. Repository writes should appear as
-execution records tied to the originating tracked grant, catalog grant,
-proposal workspace, or application workspace action.
+GitHub publication should create or update a Grantfinder-managed branch and
+open or update a pull request against the configured base branch. The default
+branch name should be stable for a pursuit, derived from the source record ID,
+so later research and proposal updates keep landing in the same pull request.
 
-Why this over a dedicated GitHub secret store:
-- provider connections already model scoped external access
-- proposal and generation actions already log executions there
-- it avoids inventing a second credential and auditing path
+Why this over direct commits:
+- Grantfinder work may be produced by agents and should remain reviewable by the
+  repository owner
+- pull requests make generated changes visible without surprising collaborators
+- a stable branch lets users review a pursuit as one coherent working surface
 
 Alternatives considered:
-- Add repository write secrets directly to the repository binding. Rejected
-  because it duplicates credential handling and weakens audit clarity.
+- Commit directly to the configured branch. Rejected because users and
+  collaborators may not appreciate agent-created commits landing without review.
+
+### Decision: Use Privy-linked GitHub accounts for write credentials and provider records for audit
+
+Users should link or sign in with GitHub through Privy before enabling
+repository publication. The product should require a GitHub-linked Privy account
+with write-capable OAuth scopes before attempting publication. Provider
+connections should represent the GitHub capability and execution records should
+record each branch, commit, and pull request operation.
+
+Why this over environment-level GitHub credentials:
+- repository writes should happen with user consent and user-scoped access
+- users can link GitHub only when they need repository functionality
+- audit records can show which user-connected GitHub account performed the work
+
+Implementation note:
+- Privy supports GitHub OAuth and account linking. Write-capable GitHub tokens
+  require configuring Grantfinder's own GitHub OAuth credentials in Privy,
+  enabling OAuth token return, and requesting the required GitHub scopes.
 
 ## Risks / Trade-offs
 
@@ -159,8 +180,8 @@ Alternatives considered:
   Keep platform state authoritative, record the publish failure, and expose the
   error so users can retry.
 - [GitHub auth configuration is missing or scoped incorrectly] → Require a
-  compatible provider connection on the repository binding and report blocked
-  publication clearly.
+  Privy-linked GitHub account with a compatible provider connection on the
+  repository binding and report blocked publication clearly.
 - [Deterministic repository paths become noisy over long pursuits] → Keep the
   first version stable and transparent, then revisit compaction or archival
   rules as follow-up work.
@@ -170,8 +191,8 @@ Alternatives considered:
 1. Extend pursuit records with repository binding and publication-status fields.
 2. Add resolution helpers so downstream proposal and application reads expose
    the effective repository.
-3. Add GitHub publication helpers using provider connections and execution
-   logging.
+3. Add GitHub publication helpers using Privy-linked GitHub credentials,
+   provider connections, branch/pull-request publication, and execution logging.
 4. Hook publication into research completion, durable proposal actions, explicit
    proposal sync, section generation, and proposal finalization.
 5. Add browser and docs surfaces for attaching repositories, opening linked
