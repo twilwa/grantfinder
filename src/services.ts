@@ -31,6 +31,10 @@ import type {
   PlatformOrganization,
   PlatformOrganizationPersonnel,
   PlatformOrganizationPrefill,
+  PlatformRepositoryBinding,
+  PlatformRepositoryBindingSource,
+  PlatformRepositoryPublication,
+  AgentExecutionTargetType,
   PlatformProposalContact,
   PlatformProposalFeasibilitySnapshot,
   PlatformProposalOutcome,
@@ -57,6 +61,14 @@ import type {
   FundingChallenge,
   GrantQueueState,
 } from "./platform-types.js";
+import { DEFAULT_REPOSITORY_ROOT_PATH } from "./platform-types.js";
+import {
+  persistLatestPublicationStatus,
+  readLatestPublicationStatus,
+  resolveRepositoryPublicationTarget,
+  upsertPublicationPullRequest,
+  type RepositoryPublicationAdapter,
+} from "./repository-publication.js";
 import { ApplicationStore } from "./store.js";
 import type { FundingOpportunity } from "./report.js";
 import type { BusinessScenario } from "./types.js";
@@ -172,6 +184,12 @@ interface UpdateCatalogGrantInput {
   freshnessNotes?: string | null;
   pursuitNotes?: string | null;
   lastValidatedAt?: string | null;
+  repositoryBinding?: RepositoryBindingInput | null;
+}
+
+interface UpdateTrackedGrantInput {
+  queueState?: GrantQueueState;
+  repositoryBinding?: RepositoryBindingInput | null;
 }
 
 interface UpsertGrantApplicationSchemaInput {
@@ -213,6 +231,14 @@ interface CreateProposalWorkspaceInput {
   } | null;
 }
 
+export interface RepositoryBindingInput {
+  repositoryUrl: string;
+  baseBranch: string;
+  rootPath?: string | null;
+  privyGitHubAccountId?: string | null;
+  providerConnectionId: string;
+}
+
 interface UpdateProposalWorkspaceInput {
   stage?: ProposalWorkspaceStage;
   summary?: string;
@@ -246,6 +272,26 @@ interface UpdateProposalWorkspaceInput {
     summary: string;
     recordedAt: string;
   } | null;
+  repositoryBinding?: RepositoryBindingInput | null;
+}
+
+interface RepositoryBindingResolution {
+  repositoryBinding: PlatformRepositoryBinding | null;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
+}
+
+interface RepositoryPublicationInput {
+  path: string;
+  content: string;
+  summary: string;
+}
+
+interface RepositoryPublicationResolution {
+  repositoryBinding: PlatformRepositoryBinding;
+  repositoryBindingSource: PlatformRepositoryBindingSource;
+  targetType: AgentExecutionTargetType;
+  targetId: string;
+  persistRepositoryBinding: (binding: PlatformRepositoryBinding) => Promise<void>;
 }
 
 interface GenerateWorkspaceSectionInput {
@@ -312,6 +358,7 @@ interface WorkspaceRequest extends PlatformResearchRequest {
 interface WorkspaceGrant extends PlatformTrackedGrant {
   requestStatus: PlatformResearchRequest["status"];
   scenarioName: string;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
 }
 
 export interface WorkspaceData {
@@ -410,6 +457,13 @@ function byCreatedAt<T extends { createdAt: string }>(left: T, right: T): number
   return right.createdAt.localeCompare(left.createdAt);
 }
 
+const REPOSITORY_BINDING_REQUIRED_MESSAGE =
+  "Repository binding is required before publication can proceed.";
+const GITHUB_PUBLICATION_ACCESS_MESSAGE =
+  "GitHub publication access is not available for this repository binding.";
+const REPOSITORY_PUBLICATION_ADAPTER_MESSAGE =
+  "Repository publication adapter is not configured.";
+
 export class ApplicationServices {
   private readonly activeResearchRuns = new Map<string, ActiveResearchRun>();
 
@@ -418,6 +472,7 @@ export class ApplicationServices {
     private readonly authProvider?: BrowserAuthProvider,
     private readonly researchRunner: FundingResearchRunner = runFundingResearch,
     private readonly researchSessionFactory: FundingResearchSessionFactory | null = createFundingResearchAgent,
+    private readonly publicationAdapter: RepositoryPublicationAdapter | null = null,
   ) {}
 
   toPublicUser(user: PlatformUser) {
@@ -500,7 +555,26 @@ export class ApplicationServices {
     };
   }
 
-  toPublicGrantCatalogEntry(grant: PlatformGrantCatalogEntry, isBookmarked: boolean) {
+  toPublicGrantCatalogEntry(
+    grant: PlatformGrantCatalogEntry,
+    isBookmarked: boolean,
+    state?: PlatformState,
+  ) {
+    const repositoryBinding = state
+      ? this.resolveCatalogGrantRepositoryBinding(grant, state)
+      : grant.repositoryBinding
+        ? {
+            repositoryBinding: this.cloneRepositoryBinding(grant.repositoryBinding),
+            repositoryBindingSource: {
+              kind: "catalog_grant" as const,
+              id: grant.id,
+            },
+          }
+        : {
+            repositoryBinding: null,
+            repositoryBindingSource: null,
+          };
+
     return {
       id: grant.id,
       createdByUserId: grant.createdByUserId,
@@ -508,6 +582,8 @@ export class ApplicationServices {
       sourceGrantId: grant.sourceGrantId,
       sourceReportId: grant.sourceReportId,
       lastResearchRequestId: grant.lastResearchRequestId,
+      repositoryBinding: repositoryBinding.repositoryBinding,
+      repositoryBindingSource: repositoryBinding.repositoryBindingSource,
       title: grant.title,
       sponsor: grant.sponsor,
       fundingType: grant.fundingType,
@@ -529,6 +605,15 @@ export class ApplicationServices {
       createdAt: grant.createdAt,
       updatedAt: grant.updatedAt,
     };
+  }
+
+  private cloneRepositoryBinding(binding: PlatformRepositoryBinding | null) {
+    return binding
+      ? {
+          ...binding,
+          latestPublication: binding.latestPublication ? { ...binding.latestPublication } : null,
+        }
+      : null;
   }
 
   toPublicGrantApplicationSchema(schema: PlatformGrantApplicationSchema) {
@@ -571,7 +656,8 @@ export class ApplicationServices {
     };
   }
 
-  toPublicApplicationWorkspace(workspace: PlatformApplicationWorkspace) {
+  toPublicApplicationWorkspace(workspace: PlatformApplicationWorkspace, state: PlatformState) {
+    const repositoryBinding = this.resolveApplicationWorkspaceRepositoryBinding(workspace, state);
     return {
       id: workspace.id,
       requesterId: workspace.requesterId,
@@ -590,6 +676,10 @@ export class ApplicationServices {
       documentType: workspace.documentType,
       title: workspace.title,
       state: workspace.state,
+      repositoryBinding: this.cloneRepositoryBinding(repositoryBinding.repositoryBinding),
+      repositoryBindingSource: repositoryBinding.repositoryBindingSource
+        ? { ...repositoryBinding.repositoryBindingSource }
+        : null,
       sections: workspace.sections
         .map((section) => ({
           id: section.id,
@@ -612,6 +702,7 @@ export class ApplicationServices {
   }
 
   toPublicProposalWorkspace(workspace: PlatformProposalWorkspace, state: PlatformState) {
+    const repositoryBinding = this.resolveProposalWorkspaceRepositoryBinding(workspace, state);
     const primaryApplicationWorkspace = workspace.primaryApplicationWorkspaceId
       ? state.applicationWorkspaces.find((candidate) => candidate.id === workspace.primaryApplicationWorkspaceId) ?? null
       : null;
@@ -631,6 +722,10 @@ export class ApplicationServices {
       organizationId: workspace.organizationId,
       trackedGrantId: workspace.trackedGrantId,
       catalogGrantId,
+      repositoryBinding: this.cloneRepositoryBinding(repositoryBinding.repositoryBinding),
+      repositoryBindingSource: repositoryBinding.repositoryBindingSource
+        ? { ...repositoryBinding.repositoryBindingSource }
+        : null,
       opportunity: {
         ...workspace.opportunity,
       },
@@ -671,6 +766,641 @@ export class ApplicationServices {
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
     };
+  }
+
+  private toWorkspaceGrant(
+    grant: PlatformTrackedGrant,
+    requestStatus: WorkspaceGrant["requestStatus"],
+    scenarioName: string,
+  ): WorkspaceGrant {
+    const repositoryBinding = this.resolveTrackedGrantRepositoryBinding(grant);
+    return {
+      ...grant,
+      repositoryBinding: this.cloneRepositoryBinding(repositoryBinding.repositoryBinding),
+      repositoryBindingSource: repositoryBinding.repositoryBindingSource
+        ? { ...repositoryBinding.repositoryBindingSource }
+        : null,
+      requestStatus,
+      scenarioName,
+    };
+  }
+
+  private resolveProposalWorkspaceRepositoryBinding(
+    workspace: PlatformProposalWorkspace,
+    state: PlatformState,
+  ): RepositoryBindingResolution {
+    if (workspace.repositoryBinding) {
+      return {
+        repositoryBinding: workspace.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "proposal_workspace",
+          id: workspace.id,
+        },
+      };
+    }
+
+    const catalogGrant = workspace.catalogGrantId
+      ? state.grantCatalogEntries.find((candidate) => candidate.id === workspace.catalogGrantId) ?? null
+      : null;
+    if (catalogGrant?.repositoryBinding) {
+      return {
+        repositoryBinding: catalogGrant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "catalog_grant",
+          id: catalogGrant.id,
+        },
+      };
+    }
+
+    const trackedGrant = workspace.trackedGrantId
+      ? state.trackedGrants.find((candidate) => candidate.id === workspace.trackedGrantId) ?? null
+      : catalogGrant?.sourceGrantId
+        ? state.trackedGrants.find((candidate) => candidate.id === catalogGrant.sourceGrantId) ?? null
+        : null;
+    if (trackedGrant?.repositoryBinding) {
+      return {
+        repositoryBinding: trackedGrant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "tracked_grant",
+          id: trackedGrant.id,
+        },
+      };
+    }
+
+    return {
+      repositoryBinding: null,
+      repositoryBindingSource: null,
+    };
+  }
+
+  private resolveCatalogGrantRepositoryBinding(
+    grant: PlatformGrantCatalogEntry,
+    state: PlatformState,
+  ): RepositoryBindingResolution {
+    if (grant.repositoryBinding) {
+      return {
+        repositoryBinding: grant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "catalog_grant",
+          id: grant.id,
+        },
+      };
+    }
+
+    const trackedGrant = grant.sourceGrantId
+      ? state.trackedGrants.find((candidate) => candidate.id === grant.sourceGrantId) ?? null
+      : null;
+    if (trackedGrant?.repositoryBinding) {
+      return {
+        repositoryBinding: trackedGrant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "tracked_grant",
+          id: trackedGrant.id,
+        },
+      };
+    }
+
+    return {
+      repositoryBinding: null,
+      repositoryBindingSource: null,
+    };
+  }
+
+  private resolveTrackedGrantRepositoryBinding(grant: PlatformTrackedGrant): RepositoryBindingResolution {
+    if (!grant.repositoryBinding) {
+      return {
+        repositoryBinding: null,
+        repositoryBindingSource: null,
+      };
+    }
+
+    return {
+      repositoryBinding: grant.repositoryBinding,
+      repositoryBindingSource: {
+        kind: "tracked_grant",
+        id: grant.id,
+      },
+    };
+  }
+
+  private async resolveRepositoryPublicationForTarget(
+    user: PlatformUser,
+    target: PlatformRepositoryBindingSource,
+  ): Promise<RepositoryPublicationResolution | null> {
+    switch (target.kind) {
+      case "tracked_grant": {
+        const grant = await this.requireGrantOwner(user, target.id);
+        if (!grant.repositoryBinding) {
+          return null;
+        }
+
+        return {
+          repositoryBinding: grant.repositoryBinding,
+          repositoryBindingSource: {
+            kind: "tracked_grant",
+            id: grant.id,
+          },
+          targetType: "tracked_grant",
+          targetId: grant.id,
+          persistRepositoryBinding: async (binding) => {
+            await this.store.saveTrackedGrant({
+              ...grant,
+              repositoryBinding: binding,
+              updatedAt: now(),
+            });
+          },
+        };
+      }
+      case "catalog_grant": {
+        const state = await this.store.readState();
+        const grant = await this.requireCatalogGrant(target.id);
+        const repositoryBinding = this.resolveCatalogGrantRepositoryBinding(grant, state);
+        if (!repositoryBinding.repositoryBinding || !repositoryBinding.repositoryBindingSource) {
+          return null;
+        }
+
+        if (repositoryBinding.repositoryBindingSource.kind === "catalog_grant") {
+          return {
+            repositoryBinding: repositoryBinding.repositoryBinding,
+            repositoryBindingSource: repositoryBinding.repositoryBindingSource,
+            targetType: "grant_catalog_entry",
+            targetId: grant.id,
+            persistRepositoryBinding: async (binding) => {
+              await this.store.saveGrantCatalogEntry({
+                ...grant,
+                repositoryBinding: binding,
+                updatedAt: now(),
+              });
+            },
+          };
+        }
+
+        const trackedGrant = state.trackedGrants.find(
+          (candidate) => candidate.id === repositoryBinding.repositoryBindingSource?.id,
+        );
+        if (!trackedGrant) {
+          return null;
+        }
+
+        return {
+          repositoryBinding: repositoryBinding.repositoryBinding,
+          repositoryBindingSource: repositoryBinding.repositoryBindingSource,
+          targetType: "tracked_grant",
+          targetId: trackedGrant.id,
+          persistRepositoryBinding: async (binding) => {
+            await this.store.saveTrackedGrant({
+              ...trackedGrant,
+              repositoryBinding: binding,
+              updatedAt: now(),
+            });
+          },
+        };
+      }
+      case "proposal_workspace": {
+        const state = await this.store.readState();
+        const workspace = this.requireProposalWorkspaceEditor(user, target.id, state);
+        const repositoryBinding = this.resolveProposalWorkspaceRepositoryBinding(workspace, state);
+        if (!repositoryBinding.repositoryBinding || !repositoryBinding.repositoryBindingSource) {
+          return null;
+        }
+
+        if (repositoryBinding.repositoryBindingSource.kind === "proposal_workspace") {
+          return {
+            repositoryBinding: repositoryBinding.repositoryBinding,
+            repositoryBindingSource: repositoryBinding.repositoryBindingSource,
+            targetType: "proposal_workspace",
+            targetId: workspace.id,
+            persistRepositoryBinding: async (binding) => {
+              await this.store.saveProposalWorkspace({
+                ...workspace,
+                repositoryBinding: binding,
+                updatedAt: now(),
+              });
+            },
+          };
+        }
+
+        if (repositoryBinding.repositoryBindingSource.kind === "catalog_grant") {
+          const grant = state.grantCatalogEntries.find(
+            (candidate) => candidate.id === repositoryBinding.repositoryBindingSource?.id,
+          );
+          if (!grant) {
+            return null;
+          }
+
+          return {
+            repositoryBinding: repositoryBinding.repositoryBinding,
+            repositoryBindingSource: repositoryBinding.repositoryBindingSource,
+            targetType: "grant_catalog_entry",
+            targetId: grant.id,
+            persistRepositoryBinding: async (binding) => {
+              await this.store.saveGrantCatalogEntry({
+                ...grant,
+                repositoryBinding: binding,
+                updatedAt: now(),
+              });
+            },
+          };
+        }
+
+        const trackedGrant = state.trackedGrants.find(
+          (candidate) => candidate.id === repositoryBinding.repositoryBindingSource?.id,
+        );
+        if (!trackedGrant) {
+          return null;
+        }
+
+        return {
+          repositoryBinding: repositoryBinding.repositoryBinding,
+          repositoryBindingSource: repositoryBinding.repositoryBindingSource,
+          targetType: "tracked_grant",
+          targetId: trackedGrant.id,
+          persistRepositoryBinding: async (binding) => {
+            await this.store.saveTrackedGrant({
+              ...trackedGrant,
+              repositoryBinding: binding,
+              updatedAt: now(),
+            });
+          },
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
+  private resolveApplicationWorkspaceRepositoryBinding(
+    workspace: PlatformApplicationWorkspace,
+    state: PlatformState,
+  ): RepositoryBindingResolution {
+    const proposalWorkspace =
+      state.proposalWorkspaces.find((candidate) => candidate.primaryApplicationWorkspaceId === workspace.id) ?? null;
+    if (proposalWorkspace) {
+      return this.resolveProposalWorkspaceRepositoryBinding(proposalWorkspace, state);
+    }
+
+    const catalogGrant = workspace.catalogGrantId
+      ? state.grantCatalogEntries.find((candidate) => candidate.id === workspace.catalogGrantId) ?? null
+      : null;
+    if (catalogGrant?.repositoryBinding) {
+      return {
+        repositoryBinding: catalogGrant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "catalog_grant",
+          id: catalogGrant.id,
+        },
+      };
+    }
+
+    const trackedGrant = catalogGrant?.sourceGrantId
+      ? state.trackedGrants.find((candidate) => candidate.id === catalogGrant.sourceGrantId) ?? null
+      : null;
+    if (trackedGrant?.repositoryBinding) {
+      return {
+        repositoryBinding: trackedGrant.repositoryBinding,
+        repositoryBindingSource: {
+          kind: "tracked_grant",
+          id: trackedGrant.id,
+        },
+      };
+    }
+
+    return {
+      repositoryBinding: null,
+      repositoryBindingSource: null,
+    };
+  }
+
+  private async requireGitHubPublicationAccess(
+    user: PlatformUser,
+    binding: PlatformRepositoryBinding,
+  ): Promise<{ connection: PlatformAgentProviderConnection | null; blockedReason: string | null }> {
+    if (!binding.privyGitHubAccountId) {
+      return { connection: null, blockedReason: GITHUB_PUBLICATION_ACCESS_MESSAGE };
+    }
+
+    const connection = await this.store.findAgentProviderConnectionById(binding.providerConnectionId);
+    if (!connection) {
+      return { connection: null, blockedReason: GITHUB_PUBLICATION_ACCESS_MESSAGE };
+    }
+
+    const organization = connection.scope === "organization" ? await this.findOrganizationForUser(user) : null;
+    const ownsConnection =
+      (connection.scope === "user" && connection.ownerUserId === user.id) ||
+      (connection.scope === "organization" && connection.organizationId === organization?.id);
+    if (!ownsConnection) {
+      return { connection, blockedReason: GITHUB_PUBLICATION_ACCESS_MESSAGE };
+    }
+
+    if (connection.provider !== "github" || connection.authType !== "oauth") {
+      return { connection, blockedReason: GITHUB_PUBLICATION_ACCESS_MESSAGE };
+    }
+
+    return { connection, blockedReason: null };
+  }
+
+  private async persistPublicationResolution(
+    resolution: RepositoryPublicationResolution,
+    publication: PlatformRepositoryPublication,
+    updatedAt: string,
+  ) {
+    const nextBinding = persistLatestPublicationStatus(
+      resolution.repositoryBinding,
+      publication,
+      updatedAt,
+    );
+    await resolution.persistRepositoryBinding(nextBinding);
+  }
+
+  private async recordPublicationAttempt(
+    user: PlatformUser,
+    resolution: RepositoryPublicationResolution,
+    publication: PlatformRepositoryPublication,
+    summary: string,
+    repositoryPath: string,
+    createdAt: string,
+  ) {
+    await this.store.createAgentExecutionRecord({
+      id: makeId("execution"),
+      actorUserId: user.id,
+      providerConnectionId: resolution.repositoryBinding.providerConnectionId,
+      targetType: resolution.targetType,
+      targetId: resolution.targetId,
+      action: "publish_repository_artifact",
+      outputText: [
+        summary,
+        `Status: ${publication.status}`,
+        `Repository path: ${repositoryPath}`,
+        publication.commitSha ? `Commit: ${publication.commitSha}` : null,
+        publication.pullRequestUrl ? `Pull request: ${publication.pullRequestUrl}` : null,
+        publication.errorMessage ? `Error: ${publication.errorMessage}` : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      createdAt,
+    });
+  }
+
+  private async publishRepositoryArtifacts(
+    user: PlatformUser,
+    target: PlatformRepositoryBindingSource,
+    artifacts: RepositoryPublicationInput[],
+  ) {
+    for (const artifact of artifacts) {
+      await this.publishRepositoryArtifact(user, target, artifact);
+    }
+  }
+
+  private async publishResearchRequestArtifacts(
+    user: PlatformUser,
+    request: PlatformResearchRequest,
+    report: PlatformGrantReport,
+    grants: PlatformTrackedGrant[],
+  ) {
+    if (!request.sourceCatalogGrantId) {
+      return;
+    }
+
+    await this.publishRepositoryArtifacts(user, { kind: "catalog_grant", id: request.sourceCatalogGrantId }, [
+      {
+        path: `research/${request.id}/brief.md`,
+        content: this.renderResearchBriefPublication(request, report),
+        summary: `Published research brief for ${request.id}`,
+      },
+      {
+        path: `research/${request.id}/report.md`,
+        content: this.renderResearchReportPublication(request, report),
+        summary: `Published research report for ${request.id}`,
+      },
+      {
+        path: `research/${request.id}/supporting.md`,
+        content: this.renderResearchSupportingPublication(request, report, grants),
+        summary: `Published supporting research notes for ${request.id}`,
+      },
+    ]);
+  }
+
+  private renderResearchBriefPublication(
+    request: PlatformResearchRequest,
+    report: PlatformGrantReport,
+  ): string {
+    return [
+      "# Research Brief",
+      `Request: ${request.id}`,
+      `Business case: ${report.businessCaseId}`,
+      "",
+      "Funding hypotheses:",
+      ...(report.opportunities.length
+        ? report.opportunities.map((opportunity) => `- ${opportunity.title}: ${opportunity.whyFit}`)
+        : ["- No opportunities were published."]),
+    ].join("\n");
+  }
+
+  private renderResearchReportPublication(
+    request: PlatformResearchRequest,
+    report: PlatformGrantReport,
+  ): string {
+    return [
+      "# Research Report",
+      `Request: ${request.id}`,
+      "",
+      `Executive summary: ${report.executiveSummary}`,
+      "",
+      `Search summary: ${report.searchSummary}`,
+      "",
+      "Opportunities:",
+      ...report.opportunities.map(
+        (opportunity, index) =>
+          `${index + 1}. ${opportunity.title} | ${opportunity.sponsor} | ${opportunity.fitScore} | ${opportunity.status}`,
+      ),
+      "",
+      "Next actions:",
+      ...report.nextActions.map((action) => `- ${action}`),
+    ].join("\n");
+  }
+
+  private renderResearchSupportingPublication(
+    request: PlatformResearchRequest,
+    report: PlatformGrantReport,
+    grants: PlatformTrackedGrant[],
+  ): string {
+    return [
+      "# Supporting Research Notes",
+      `Request: ${request.id}`,
+      `Source catalog grant: ${request.sourceCatalogGrantId ?? "none"}`,
+      "",
+      "Research tracks:",
+      ...(grants.length
+        ? grants.map((grant) => `- ${grant.title} (${grant.sponsor}) -> ${grant.catalogGrantId ?? "uncataloged"}`)
+        : ["- No tracked grants were produced."]),
+      "",
+      "Citations:",
+      ...(report.opportunities.length
+        ? report.opportunities.flatMap((opportunity) => opportunity.citations.map((citation) => `- ${citation}`))
+        : ["- No opportunity citations were published."]),
+    ].join("\n");
+  }
+
+  private async publishProposalWorkspaceArtifacts(
+    user: PlatformUser,
+    workspace: PlatformProposalWorkspace,
+    state: PlatformState,
+  ) {
+    const publicWorkspace = this.toPublicProposalWorkspace(workspace, state);
+    if (!publicWorkspace.repositoryBindingSource) {
+      return;
+    }
+
+    const artifacts: RepositoryPublicationInput[] = [
+      {
+        path: `pursuits/${workspace.id}/workspace.md`,
+        content: this.renderProposalWorkspacePublication(publicWorkspace),
+        summary: `Published proposal workspace ${workspace.id}`,
+      },
+    ];
+    if (publicWorkspace.contacts.length) {
+      artifacts.push({
+        path: `pursuits/${workspace.id}/contacts.md`,
+        content: this.renderProposalContactsPublication(publicWorkspace),
+        summary: `Published proposal contacts for ${workspace.id}`,
+      });
+    }
+    if (publicWorkspace.outreachEvents.length) {
+      artifacts.push({
+        path: `pursuits/${workspace.id}/outreach.md`,
+        content: this.renderProposalOutreachPublication(publicWorkspace),
+        summary: `Published proposal outreach for ${workspace.id}`,
+      });
+    }
+
+    await this.publishRepositoryArtifacts(user, publicWorkspace.repositoryBindingSource, artifacts);
+  }
+
+  private renderProposalWorkspacePublication(
+    workspace: ReturnType<ApplicationServices["toPublicProposalWorkspace"]>,
+  ): string {
+    const feasibility = workspace.feasibilitySnapshot;
+    return [
+      "# Proposal Workspace",
+      `Workspace: ${workspace.id}`,
+      `Title: ${workspace.opportunity.title}`,
+      `Stage: ${workspace.stage}`,
+      "",
+      `Summary: ${workspace.summary || "No summary has been written yet."}`,
+      "",
+      "Next steps:",
+      ...(workspace.nextSteps.length ? workspace.nextSteps.map((step) => `- ${step}`) : ["- No next steps recorded."]),
+      "",
+      "Open questions:",
+      ...(workspace.openQuestions.length
+        ? workspace.openQuestions.map((question) => `- ${question}`)
+        : ["- No open questions recorded."]),
+      "",
+      "Feasibility:",
+      ...(feasibility
+        ? [
+            `- Verdict: ${feasibility.verdict}`,
+            `- Confidence: ${feasibility.confidence}`,
+            `- Blockers: ${feasibility.blockers.join("; ") || "None"}`,
+            `- Assumptions: ${feasibility.assumptions.join("; ") || "None"}`,
+            `- Required documents: ${feasibility.requiredDocuments.join("; ") || "None"}`,
+            `- Recommended next step: ${feasibility.recommendedNextStep}`,
+          ]
+        : ["- No feasibility snapshot has been recorded."]),
+    ].join("\n");
+  }
+
+  private renderProposalContactsPublication(
+    workspace: ReturnType<ApplicationServices["toPublicProposalWorkspace"]>,
+  ): string {
+    return [
+      "# Proposal Contacts",
+      `Workspace: ${workspace.id}`,
+      "",
+      ...(workspace.contacts.length
+        ? workspace.contacts.map(
+            (contact) =>
+              `- ${contact.name}${contact.roleTitle ? `, ${contact.roleTitle}` : ""}${contact.email ? `, ${contact.email}` : ""}`,
+          )
+        : ["- No contacts recorded."]),
+    ].join("\n");
+  }
+
+  private renderProposalOutreachPublication(
+    workspace: ReturnType<ApplicationServices["toPublicProposalWorkspace"]>,
+  ): string {
+    return [
+      "# Proposal Outreach",
+      `Workspace: ${workspace.id}`,
+      "",
+      ...(workspace.outreachEvents.length
+        ? workspace.outreachEvents.map((event) => `- ${event.kind}: ${event.subject} -> ${event.summary}`)
+        : ["- No outreach has been drafted."]),
+    ].join("\n");
+  }
+
+  private async publishApplicationWorkspaceSections(
+    user: PlatformUser,
+    workspace: PlatformApplicationWorkspace,
+    state: PlatformState,
+    sectionIds: string[] | null = null,
+  ) {
+    const publicWorkspace = this.toPublicApplicationWorkspace(workspace, state);
+    if (!publicWorkspace.repositoryBindingSource) {
+      return;
+    }
+
+    const sections = sectionIds
+      ? publicWorkspace.sections.filter((section) => sectionIds.includes(section.id))
+      : publicWorkspace.sections;
+    if (!sections.length) {
+      return;
+    }
+
+    await this.publishRepositoryArtifacts(
+      user,
+      publicWorkspace.repositoryBindingSource,
+      sections.map((section) => ({
+        path: `applications/${workspace.id}/${section.key}.md`,
+        content: section.content,
+        summary: `Published application section ${section.key} for ${workspace.id}`,
+      })),
+    );
+  }
+
+  private async publishFinalApplicationWorkspaceDocument(
+    user: PlatformUser,
+    workspace: PlatformApplicationWorkspace,
+    state: PlatformState,
+  ) {
+    const publicWorkspace = this.toPublicApplicationWorkspace(workspace, state);
+    if (!publicWorkspace.repositoryBindingSource) {
+      return;
+    }
+
+    await this.publishRepositoryArtifacts(user, publicWorkspace.repositoryBindingSource, [
+      {
+        path: `applications/${workspace.id}/final.md`,
+        content: this.renderFinalApplicationWorkspacePublication(publicWorkspace),
+        summary: `Published finalized application document for ${workspace.id}`,
+      },
+    ]);
+  }
+
+  private renderFinalApplicationWorkspacePublication(
+    workspace: ReturnType<ApplicationServices["toPublicApplicationWorkspace"]>,
+  ): string {
+    return [
+      "# Final Application",
+      `Workspace: ${workspace.id}`,
+      `Title: ${workspace.title}`,
+      `State: ${workspace.state}`,
+      "",
+      "Sections:",
+      ...(workspace.sections.length
+        ? workspace.sections.map((section) => `## ${section.title}\n${section.content || "No content."}`)
+        : ["- No sections were generated."]),
+    ].join("\n");
   }
 
   private toPublicProposalJobSummary(job: PlatformJob | null, catalogGrantId: string | null) {
@@ -1223,11 +1953,11 @@ export class ApplicationServices {
       .filter((grant) => grant.requesterId === user.id)
       .map((grant) => {
         const request = state.researchRequests.find((candidate) => candidate.id === grant.requestId);
-        return {
-          ...grant,
-          requestStatus: requestStatuses.get(grant.requestId) ?? request?.status ?? "draft",
-          scenarioName: scenarioNames.get(request?.scenarioId ?? "") ?? (request?.scenarioId ?? "Unknown scenario"),
-        };
+        return this.toWorkspaceGrant(
+          grant,
+          requestStatuses.get(grant.requestId) ?? request?.status ?? "draft",
+          scenarioNames.get(request?.scenarioId ?? "") ?? (request?.scenarioId ?? "Unknown scenario"),
+        );
       })
       .sort(byCreatedAt);
     const reports = state.grantReports
@@ -1235,7 +1965,7 @@ export class ApplicationServices {
       .map((report) => this.toPublicGrantReport(report))
       .sort(byCreatedAt);
     const catalog = state.grantCatalogEntries
-      .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id)))
+      .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id), state))
       .sort(byCreatedAt);
     const applicationTemplates = state.applicationTemplates
       .filter((template) => template.ownerUserId === user.id)
@@ -1243,7 +1973,7 @@ export class ApplicationServices {
       .sort(byCreatedAt);
     const applicationWorkspaces = state.applicationWorkspaces
       .filter((workspace) => workspace.requesterId === user.id)
-      .map((workspace) => this.toPublicApplicationWorkspace(workspace))
+      .map((workspace) => this.toPublicApplicationWorkspace(workspace, state))
       .sort(byCreatedAt);
     const proposalWorkspaces = this.listAccessibleProposalWorkspaces(user, state);
     const providerConnections = state.agentProviderConnections
@@ -1291,11 +2021,9 @@ export class ApplicationServices {
     const scenarioNames = await this.getScenarioNameMap(user, state);
     const grants = state.trackedGrants
       .filter((grant) => grant.requestId === request.id)
-      .map((grant) => ({
-        ...grant,
-        requestStatus: request.status,
-        scenarioName: scenarioNames.get(request.scenarioId) ?? request.scenarioId,
-      }))
+      .map((grant) =>
+        this.toWorkspaceGrant(grant, request.status, scenarioNames.get(request.scenarioId) ?? request.scenarioId),
+      )
       .sort(byCreatedAt);
 
     return {
@@ -1339,6 +2067,7 @@ export class ApplicationServices {
       sourceGrantId: grant.id,
       sourceReportId: report.id,
       lastResearchRequestId: existingEntry?.lastResearchRequestId ?? grant.requestId,
+      repositoryBinding: existingEntry?.repositoryBinding ?? null,
       title: grant.title,
       sponsor: grant.sponsor,
       fundingType: grant.fundingType,
@@ -1369,8 +2098,9 @@ export class ApplicationServices {
       });
     }
     const bookmarked = await this.isCatalogGrantBookmarked(user.id, savedEntry.id);
+    const nextState = await this.store.readState();
     return {
-      grant: this.toPublicGrantCatalogEntry(savedEntry, bookmarked),
+      grant: this.toPublicGrantCatalogEntry(savedEntry, bookmarked, nextState),
     };
   }
 
@@ -1389,7 +2119,7 @@ export class ApplicationServices {
     return {
       grants: state.grantCatalogEntries
         .filter((grant) => !bookmarkedOnly || bookmarkIds.has(grant.id))
-        .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id)))
+        .map((grant) => this.toPublicGrantCatalogEntry(grant, bookmarkIds.has(grant.id), state))
         .sort(byCreatedAt),
     };
   }
@@ -1400,14 +2130,18 @@ export class ApplicationServices {
     const state = await this.store.readState();
     const researchRequests = this.listResearchRequestsForCatalogGrant(state, grant.id);
     const proposalContext = await this.resolveCatalogGrantProposalContext(user, state, grant);
-    const latestReport =
-      researchRequests.length > 0
-        ? state.grantReports.find((report) => report.requestId === researchRequests[0].id) ?? null
-        : null;
+    const latestResearchRequest =
+      (grant.lastResearchRequestId
+        ? researchRequests.find((request) => request.id === grant.lastResearchRequestId) ?? null
+        : null) ?? researchRequests[0] ?? null;
+    const latestReport = latestResearchRequest
+      ? state.grantReports.find((report) => report.requestId === latestResearchRequest.id) ?? null
+      : null;
     return {
       grant: this.toPublicGrantCatalogEntry(
         grant,
         await this.isCatalogGrantBookmarked(user.id, grant.id),
+        state,
       ),
       schema: schema ? this.toPublicGrantApplicationSchema(schema) : null,
       latestReport: latestReport ? this.toPublicGrantReport(latestReport) : null,
@@ -1463,8 +2197,9 @@ export class ApplicationServices {
     await this.requireCatalogGrant(grantId);
     const isBookmarked = await this.store.setGrantBookmark(user.id, grantId, bookmarked);
     const grant = await this.requireCatalogGrant(grantId);
+    const state = await this.store.readState();
     return {
-      grant: this.toPublicGrantCatalogEntry(grant, isBookmarked),
+      grant: this.toPublicGrantCatalogEntry(grant, isBookmarked, state),
     };
   }
 
@@ -1516,6 +2251,12 @@ export class ApplicationServices {
         input.lastValidatedAt === undefined
           ? grant.lastValidatedAt
           : this.normalizeOptionalText(input.lastValidatedAt),
+      repositoryBinding:
+        input.repositoryBinding === undefined
+          ? grant.repositoryBinding
+          : input.repositoryBinding
+            ? this.normalizeRepositoryBinding(user, input.repositoryBinding, grant.repositoryBinding)
+            : null,
       updatedAt: now(),
     });
 
@@ -1523,7 +2264,188 @@ export class ApplicationServices {
       grant: this.toPublicGrantCatalogEntry(
         updatedGrant,
         await this.isCatalogGrantBookmarked(user.id, updatedGrant.id),
+        await this.store.readState(),
       ),
+    };
+  }
+
+  async updateTrackedGrantRepositoryBinding(
+    user: PlatformUser,
+    grantId: string,
+    input: RepositoryBindingInput | null,
+  ) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireGrantOwner(user, grantId);
+    const updatedGrant = await this.store.saveTrackedGrant({
+      ...grant,
+      repositoryBinding: input ? this.normalizeRepositoryBinding(user, input, grant.repositoryBinding) : null,
+      updatedAt: now(),
+    });
+
+    return {
+      grant: updatedGrant,
+    };
+  }
+
+  async updateGrantCatalogEntryRepositoryBinding(
+    user: PlatformUser,
+    grantId: string,
+    input: RepositoryBindingInput | null,
+  ) {
+    this.requireRole(user, "requester");
+
+    const grant = await this.requireCatalogGrant(grantId);
+    const updatedGrant = await this.store.saveGrantCatalogEntry({
+      ...grant,
+      repositoryBinding: input ? this.normalizeRepositoryBinding(user, input, grant.repositoryBinding) : null,
+      updatedAt: now(),
+    });
+
+    return {
+      grant: this.toPublicGrantCatalogEntry(
+        updatedGrant,
+        await this.isCatalogGrantBookmarked(user.id, updatedGrant.id),
+        await this.store.readState(),
+      ),
+    };
+  }
+
+  async updateProposalWorkspaceRepositoryBinding(
+    user: PlatformUser,
+    workspaceId: string,
+    input: RepositoryBindingInput | null,
+  ) {
+    const state = await this.store.readState();
+    const workspace = this.requireProposalWorkspaceEditor(user, workspaceId, state);
+    const updatedWorkspace = await this.store.saveProposalWorkspace({
+      ...workspace,
+      repositoryBinding: input ? this.normalizeRepositoryBinding(user, input, workspace.repositoryBinding) : null,
+      updatedAt: now(),
+    });
+    const nextState = await this.store.readState();
+
+    return {
+      workspace: this.toPublicProposalWorkspace(updatedWorkspace, nextState),
+    };
+  }
+
+  async publishRepositoryArtifact(
+    user: PlatformUser,
+    target: PlatformRepositoryBindingSource,
+    input: RepositoryPublicationInput,
+  ) {
+    const publicationResolution = await this.resolveRepositoryPublicationForTarget(user, target);
+    if (!publicationResolution) {
+      return {
+        publication: {
+          status: "blocked" as const,
+          branch: null,
+          commitSha: null,
+          pullRequestUrl: null,
+          publishedAt: null,
+          errorMessage: REPOSITORY_BINDING_REQUIRED_MESSAGE,
+        },
+      };
+    }
+
+    const summary = requireText(input.summary, "summary");
+    const publicationTarget = resolveRepositoryPublicationTarget(
+      publicationResolution.repositoryBinding,
+      publicationResolution.repositoryBindingSource,
+      requireText(input.path, "path"),
+    );
+    const publicationBase = {
+      branch: publicationTarget.branchName,
+      commitSha: null as string | null,
+      pullRequestUrl: null as string | null,
+      publishedAt: null as string | null,
+    };
+    const access = await this.requireGitHubPublicationAccess(user, publicationResolution.repositoryBinding);
+    const createdAt = now();
+
+    if (access.blockedReason) {
+      const publication = {
+        status: "blocked" as const,
+        ...publicationBase,
+        errorMessage: access.blockedReason,
+      };
+      await this.persistPublicationResolution(publicationResolution, publication, createdAt);
+      await this.recordPublicationAttempt(
+        user,
+        publicationResolution,
+        publication,
+        summary,
+        publicationTarget.repositoryPath,
+        createdAt,
+      );
+      return { publication };
+    }
+
+    let publication: PlatformRepositoryPublication = {
+      status: "published",
+      ...publicationBase,
+      commitSha: null,
+      pullRequestUrl: null,
+      publishedAt: createdAt,
+      errorMessage: null,
+    };
+
+    try {
+      if (!this.publicationAdapter) {
+        throw new Error(REPOSITORY_PUBLICATION_ADAPTER_MESSAGE);
+      }
+
+      const commitResult = await this.publicationAdapter.writeBranchCommit({
+        repositoryUrl: publicationTarget.repositoryUrl,
+        baseBranch: publicationTarget.baseBranch,
+        branchName: publicationTarget.branchName,
+        files: [
+          {
+            path: publicationTarget.repositoryPath,
+            content: requireText(input.content, "content"),
+          },
+        ],
+      });
+      publication = {
+        ...publication,
+        commitSha: commitResult.commitSha,
+      };
+
+      const previousPublication = readLatestPublicationStatus(publicationResolution.repositoryBinding);
+      const pullRequestResult = await upsertPublicationPullRequest(this.publicationAdapter, {
+        repositoryUrl: publicationTarget.repositoryUrl,
+        baseBranch: publicationTarget.baseBranch,
+        branchName: publicationTarget.branchName,
+        title: publicationTarget.pullRequestTitle,
+        body: [publicationTarget.pullRequestBody, "", summary].join("\n"),
+        existingPullRequestUrl: previousPublication?.pullRequestUrl ?? null,
+      });
+      publication = {
+        ...publication,
+        pullRequestUrl: pullRequestResult.pullRequestUrl,
+      };
+    } catch (error) {
+      publication = {
+        ...publication,
+        status: "failed",
+        publishedAt: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    await this.persistPublicationResolution(publicationResolution, publication, createdAt);
+    await this.recordPublicationAttempt(
+      user,
+      publicationResolution,
+      publication,
+      summary,
+      publicationTarget.repositoryPath,
+      createdAt,
+    );
+
+    return {
+      publication,
     };
   }
 
@@ -1616,9 +2538,10 @@ export class ApplicationServices {
       updatedAt: timestamp,
       finalizedAt: null,
     });
+    const state = await this.store.readState();
 
     return {
-      workspace: this.toPublicApplicationWorkspace(workspace),
+      workspace: this.toPublicApplicationWorkspace(workspace, state),
     };
   }
 
@@ -1660,8 +2583,9 @@ export class ApplicationServices {
 
   async getApplicationWorkspace(user: PlatformUser, workspaceId: string) {
     const workspace = await this.requireApplicationWorkspaceOwner(user, workspaceId);
+    const state = await this.store.readState();
     return {
-      workspace: this.toPublicApplicationWorkspace(workspace),
+      workspace: this.toPublicApplicationWorkspace(workspace, state),
     };
   }
 
@@ -1685,13 +2609,14 @@ export class ApplicationServices {
       ),
       updatedAt,
     });
+    const state = await this.store.readState();
     const savedSection = savedWorkspace.sections.find((section) => section.id === sectionId);
     if (!savedSection) {
       throw new AppError(500, "workspace_section_missing", "The saved workspace section could not be loaded.");
     }
 
     return {
-      section: this.toPublicApplicationWorkspace(savedWorkspace).sections.find((section) => section.id === sectionId),
+      section: this.toPublicApplicationWorkspace(savedWorkspace, state).sections.find((section) => section.id === sectionId),
     };
   }
 
@@ -1704,9 +2629,11 @@ export class ApplicationServices {
       updatedAt: finalizedAt,
       finalizedAt,
     });
+    await this.publishFinalApplicationWorkspaceDocument(user, saved, await this.store.readState());
+    const state = await this.store.readState();
 
     return {
-      workspace: this.toPublicApplicationWorkspace(saved),
+      workspace: this.toPublicApplicationWorkspace(saved, state),
     };
   }
 
@@ -1743,6 +2670,8 @@ export class ApplicationServices {
     if (!savedSection) {
       throw new AppError(500, "workspace_section_missing", "The saved workspace section could not be loaded.");
     }
+    const state = await this.store.readState();
+    await this.publishApplicationWorkspaceSections(user, savedWorkspace, state, [sectionId]);
 
     if (input.providerConnectionId) {
       const providerConnection = await this.requireProviderConnectionForAction(
@@ -1762,8 +2691,10 @@ export class ApplicationServices {
       });
     }
 
+    const nextState = await this.store.readState();
+
     return {
-      section: this.toPublicApplicationWorkspace(savedWorkspace).sections.find(
+      section: this.toPublicApplicationWorkspace(savedWorkspace, nextState).sections.find(
         (section) => section.id === sectionId,
       ),
     };
@@ -1803,6 +2734,7 @@ export class ApplicationServices {
       organizationId: organization?.id ?? null,
       trackedGrantId: null,
       catalogGrantId: null,
+      repositoryBinding: null,
       opportunity: this.normalizeManualProposalOpportunity(input.manualOpportunity),
       stage: "qualifying",
       summary: "",
@@ -1890,6 +2822,7 @@ export class ApplicationServices {
       organizationId: organization?.id ?? null,
       trackedGrantId: grant.id,
       catalogGrantId: catalogGrant?.id ?? grant.catalogGrantId,
+      repositoryBinding: null,
       opportunity: {
         sourceType: "tracked_grant",
         title: grant.title,
@@ -1992,6 +2925,7 @@ export class ApplicationServices {
       organizationId: organization?.id ?? null,
       trackedGrantId: proposalContext.trackedGrant?.id ?? null,
       catalogGrantId: grant.id,
+      repositoryBinding: null,
       opportunity: {
         sourceType: "catalog_grant",
         title: grant.title,
@@ -2075,8 +3009,15 @@ export class ApplicationServices {
           : this.normalizeProposalOutreachEvents(input.outreachEvents, updatedAt),
       outcome:
         input.outcome === undefined ? workspace.outcome : this.normalizeProposalOutcome(input.outcome),
+      repositoryBinding:
+        input.repositoryBinding === undefined
+          ? workspace.repositoryBinding
+          : input.repositoryBinding
+            ? this.normalizeRepositoryBinding(user, input.repositoryBinding, workspace.repositoryBinding)
+            : null,
       updatedAt,
     });
+    await this.publishProposalWorkspaceArtifacts(user, savedWorkspace, await this.store.readState());
     const nextState = await this.store.readState();
     return {
       workspace: this.toPublicProposalWorkspace(savedWorkspace, nextState),
@@ -2191,6 +3132,11 @@ export class ApplicationServices {
       outputText,
       createdAt: timestamp,
     });
+    const persistedState = await this.store.readState();
+    await this.publishProposalWorkspaceArtifacts(user, persistedWorkspace, persistedState);
+    if (savedApplicationWorkspace && input.action === "refresh_draft") {
+      await this.publishApplicationWorkspaceSections(user, savedApplicationWorkspace, persistedState);
+    }
     const nextState = await this.store.readState();
     return {
       workspace: this.toPublicProposalWorkspace(persistedWorkspace, nextState),
@@ -2231,17 +3177,20 @@ export class ApplicationServices {
     };
   }
 
-  async updateGrantQueueState(
-    user: PlatformUser,
-    grantId: string,
-    queueState: GrantQueueState,
-  ) {
+  async updateGrantQueueState(user: PlatformUser, grantId: string, input: UpdateTrackedGrantInput) {
     this.requireRole(user, "requester");
 
     const grant = await this.requireGrantOwner(user, grantId);
     const updatedGrant = await this.store.saveTrackedGrant({
       ...grant,
-      queueState: this.requireGrantQueueState(queueState),
+      queueState:
+        input.queueState === undefined ? grant.queueState : this.requireGrantQueueState(input.queueState),
+      repositoryBinding:
+        input.repositoryBinding === undefined
+          ? grant.repositoryBinding
+          : input.repositoryBinding
+            ? this.normalizeRepositoryBinding(user, input.repositoryBinding, grant.repositoryBinding)
+            : null,
       updatedAt: now(),
     });
 
@@ -2723,7 +3672,12 @@ export class ApplicationServices {
     activeRun.completion = (async () => {
       try {
         await session.agent.prompt(session.prompt);
-        return await this.finishResearchRun(request.id, {
+        const user = await this.store.findUserById(request.requesterId);
+        if (!user) {
+          throw new AppError(404, "user_not_found", "The requesting user does not exist.");
+        }
+
+        return await this.finishResearchRun(user, request.id, {
           brief: session.brief,
           report: session.getReportOrThrow(),
           messages: [],
@@ -2772,7 +3726,12 @@ export class ApplicationServices {
         }));
 
         const result = await this.executeResearch(scenario);
-        return await this.finishResearchRun(request.id, result);
+        const user = await this.store.findUserById(request.requesterId);
+        if (!user) {
+          throw new AppError(404, "user_not_found", "The requesting user does not exist.");
+        }
+
+        return await this.finishResearchRun(user, request.id, result);
       } catch (error) {
         throw await this.failResearchRun(request.id, error);
       } finally {
@@ -2881,6 +3840,7 @@ export class ApplicationServices {
   }
 
   private async finishResearchRun(
+    user: PlatformUser,
     requestId: string,
     result: FundingResearchResult,
   ): Promise<ResearchRequestRunResult> {
@@ -2950,6 +3910,7 @@ export class ApplicationServices {
       });
     }
     const savedGrants = await this.store.replaceTrackedGrants(completedRequest.id, grants);
+    await this.publishResearchRequestArtifacts(user, completedRequest, savedReport, savedGrants);
 
     return {
       request: completedRequest,
@@ -3718,6 +4679,7 @@ export class ApplicationServices {
       requestId: request.id,
       requesterId: request.requesterId,
       catalogGrantId: existingGrant?.catalogGrantId ?? null,
+      repositoryBinding: existingGrant?.repositoryBinding ?? null,
       title: opportunity.title,
       sponsor: opportunity.sponsor,
       fundingType: opportunity.fundingType,
@@ -3761,6 +4723,7 @@ export class ApplicationServices {
       sourceGrantId: grant.id,
       sourceReportId: report.id,
       lastResearchRequestId: request.id,
+      repositoryBinding: existingEntry?.repositoryBinding ?? null,
       title: grant.title,
       sponsor: grant.sponsor,
       fundingType: grant.fundingType,
@@ -4112,6 +5075,34 @@ export class ApplicationServices {
     }
 
     return workspace;
+  }
+
+  private normalizeRepositoryBinding(
+    user: PlatformUser,
+    input: RepositoryBindingInput,
+    _previousBinding: PlatformRepositoryBinding | null = null,
+  ): PlatformRepositoryBinding {
+    const privyGitHubAccountId = this.normalizeOptionalText(input.privyGitHubAccountId);
+    if (!privyGitHubAccountId) {
+      throw new AppError(
+        409,
+        "github_account_required",
+        "GitHub account linking is required before repository publication can be enabled.",
+      );
+    }
+
+    const attachedAt = now();
+    return {
+      repositoryUrl: requireText(input.repositoryUrl, "repositoryUrl"),
+      baseBranch: requireText(input.baseBranch, "baseBranch"),
+      rootPath: this.normalizeOptionalText(input.rootPath) ?? DEFAULT_REPOSITORY_ROOT_PATH,
+      privyGitHubAccountId,
+      providerConnectionId: requireText(input.providerConnectionId, "providerConnectionId"),
+      attachedByUserId: user.id,
+      attachedAt,
+      updatedAt: attachedAt,
+      latestPublication: null,
+    };
   }
 
   private normalizeManualProposalOpportunity(input: NonNullable<CreateProposalWorkspaceInput["manualOpportunity"]>) {

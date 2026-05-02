@@ -8,6 +8,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { StaticAuthProvider } from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import type { FundingResearchResult } from "../src/agent.js";
+import type { RepositoryPublicationAdapter } from "../src/repository-publication.js";
 
 function createTestDatabase() {
   const database = newDb();
@@ -85,6 +86,24 @@ function createDeferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function createPublicationRecorder() {
+  const commitCalls: Array<{ branchName: string; files: Array<{ path: string; content: string }> }> = [];
+  const adapter = {
+    async writeBranchCommit(input) {
+      commitCalls.push(input);
+      return { commitSha: `commit-${commitCalls.length}` };
+    },
+    async upsertPullRequest() {
+      return {
+        pullRequestUrl: "https://github.com/example/grants/pull/1",
+        action: "created",
+      } as const;
+    },
+  } satisfies RepositoryPublicationAdapter;
+
+  return { adapter, commitCalls };
 }
 
 function createTestApp(overrides: Record<string, unknown> = {}) {
@@ -259,6 +278,8 @@ test("docs and skill discovery routes describe deployed agent surfaces", async (
   expect(docsText).toContain("application.workspaces.updateSection");
   expect(docsText).toContain("proposal workspaces, organization, catalog, applications, and providers");
   expect(docsText).toContain("POST /api/proposal-workspaces/:id/actions");
+  expect(docsText).toContain("Repository bindings and publication");
+  expect(docsText).toContain("RepositoryPublicationAdapter");
   expect(docsText).not.toContain("bun install");
   expect(docsText).not.toContain("DATABASE_URL");
   expect(skillResponse.status).toBe(200);
@@ -273,6 +294,8 @@ test("docs and skill discovery routes describe deployed agent surfaces", async (
   expect(skillText).toContain("application.workspaces.updateSection");
   expect(skillText).toContain("POST /api/proposal-workspaces/:id/actions");
   expect(skillText).toContain("proposalWorkspaces.runAction");
+  expect(skillText).toContain("Repository bindings and publication");
+  expect(skillText).toContain("grantfinder/");
   expect(skillText).toContain(
     "request marketplace, research dashboard, my requests, my grants, proposal workspaces, organization, catalog, applications, providers",
   );
@@ -3716,5 +3739,612 @@ test("organization state persists across app instances that share the same datab
       name: "Bay Area Makers Fund",
       thematicAreas: ["stem education", "economic mobility"],
     }),
+  });
+});
+
+test("tracked grants can attach, update, clear, and read repository bindings through REST and workspace aggregates", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const grantId = runPayload.grants[0].id as string;
+
+  const attachResponse = await app.request(`/api/grants/${grantId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/grantfinder",
+        baseBranch: "main",
+        privyGitHubAccountId: "did:privy:github-account",
+        providerConnectionId: "github-connection",
+      },
+    }),
+  });
+
+  const workspaceResponse = await app.request("/api/workspace", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  const updateResponse = await app.request(`/api/grants/${grantId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/grantfinder",
+        baseBranch: "develop",
+        rootPath: "ops/",
+        privyGitHubAccountId: "did:privy:github-account",
+        providerConnectionId: "github-connection",
+      },
+    }),
+  });
+
+  const clearResponse = await app.request(`/api/grants/${grantId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: null,
+    }),
+  });
+
+  const blockedResponse = await app.request(`/api/grants/${grantId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/grantfinder",
+        baseBranch: "main",
+        providerConnectionId: "github-connection",
+      },
+    }),
+  });
+
+  expect(attachResponse.status).toBe(200);
+  expect(await attachResponse.json()).toMatchObject({
+    grant: {
+      id: grantId,
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/grantfinder",
+        baseBranch: "main",
+        rootPath: "grantfinder/",
+        privyGitHubAccountId: "did:privy:github-account",
+        providerConnectionId: "github-connection",
+        latestPublication: null,
+      },
+    },
+  });
+  expect(workspaceResponse.status).toBe(200);
+  const workspaceJson = await workspaceResponse.json();
+  const trackedGrant = workspaceJson.grants.find((grant: { id: string }) => grant.id === grantId);
+  expect(trackedGrant).toMatchObject({
+    id: grantId,
+    repositoryBinding: {
+      repositoryUrl: "https://github.com/example/grantfinder",
+      baseBranch: "main",
+      rootPath: "grantfinder/",
+      latestPublication: null,
+    },
+    repositoryBindingSource: {
+      kind: "tracked_grant",
+      id: grantId,
+    },
+  });
+  expect(updateResponse.status).toBe(200);
+  expect(await updateResponse.json()).toMatchObject({
+    grant: {
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/grantfinder",
+        baseBranch: "develop",
+        rootPath: "ops/",
+      },
+    },
+  });
+  expect(clearResponse.status).toBe(200);
+  expect(await clearResponse.json()).toMatchObject({
+    grant: {
+      id: grantId,
+      repositoryBinding: null,
+    },
+  });
+  expect(blockedResponse.status).toBe(409);
+  expect(await blockedResponse.json()).toMatchObject({
+    error: {
+      code: "github_account_required",
+    },
+  });
+});
+
+test("catalog grants can attach, update, clear, and read repository bindings through JSON-RPC and proposal workspaces", async () => {
+  const app = createTestApp({
+    researchRunner: async ({ scenario }: { scenario: { id: string } }) => createResearchResult(scenario.id),
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const scenarioResponse = await app.request("/api/research/scenarios", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Warehouse robotics",
+      summary: "A mid-market warehouse operator wants grant funding for robotics and proposal support.",
+      geography: "United States",
+      businessModel: "B2B logistics",
+      customers: ["regional manufacturers"],
+      needs: ["warehouse automation", "proposal writing support"],
+      tags: ["automation", "logistics"],
+    }),
+  });
+  const scenarioPayload = await scenarioResponse.json();
+
+  const requestResponse = await app.request("/api/research/requests", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scenarioId: scenarioPayload.scenario.id,
+    }),
+  });
+  const requestPayload = await requestResponse.json();
+
+  const runResponse = await app.request(`/api/research/requests/${requestPayload.request.id}/run`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const runPayload = await runResponse.json();
+  const grantId = runPayload.grants[0].id as string;
+
+  const promoteResponse = await app.request(`/api/grants/${grantId}/catalog-entry`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const catalogGrantId = (await promoteResponse.json()).grant.id as string;
+
+  const attachResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.update", {
+    grantId: catalogGrantId,
+    repositoryBinding: {
+      repositoryUrl: "https://github.com/example/catalog-grant",
+      baseBranch: "main",
+      privyGitHubAccountId: "did:privy:github-account",
+      providerConnectionId: "github-connection",
+    },
+  });
+
+  const detailResponse = await app.request(`/api/catalog/grants/${catalogGrantId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  const proposalCreateResponse = await app.request(`/api/catalog/grants/${catalogGrantId}/proposal-workspace`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const proposalCreateJson = await proposalCreateResponse.json();
+  const proposalWorkspaceId = proposalCreateJson.workspace.id as string;
+
+  const proposalWorkspaceReadResponse = await app.request(`/api/proposal-workspaces/${proposalWorkspaceId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const proposalWorkspaceJson = await proposalWorkspaceReadResponse.json();
+
+  const updateResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.update", {
+    grantId: catalogGrantId,
+    repositoryBinding: {
+      repositoryUrl: "https://github.com/example/catalog-grant",
+      baseBranch: "develop",
+      rootPath: "catalog/",
+      privyGitHubAccountId: "did:privy:github-account",
+      providerConnectionId: "github-connection",
+    },
+  });
+
+  const clearResponse = await callJsonRpc(app, "browser_requester", "catalog.grants.update", {
+    grantId: catalogGrantId,
+    repositoryBinding: null,
+  });
+
+  expect(attachResponse.response.status).toBe(200);
+  expect(attachResponse.payload).toMatchObject({
+    result: {
+      grant: {
+        id: catalogGrantId,
+        repositoryBinding: {
+          repositoryUrl: "https://github.com/example/catalog-grant",
+          baseBranch: "main",
+          rootPath: "grantfinder/",
+          latestPublication: null,
+        },
+      },
+    },
+  });
+  expect(detailResponse.status).toBe(200);
+  expect(await detailResponse.json()).toMatchObject({
+    grant: {
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/catalog-grant",
+        baseBranch: "main",
+        rootPath: "grantfinder/",
+        latestPublication: null,
+      },
+    },
+  });
+  expect(proposalCreateResponse.status).toBe(201);
+  expect(proposalCreateJson.workspace.repositoryBindingSource).toEqual({
+    kind: "catalog_grant",
+    id: catalogGrantId,
+  });
+  expect(proposalWorkspaceJson.workspace.repositoryBinding).toMatchObject({
+    rootPath: "grantfinder/",
+    latestPublication: null,
+  });
+  expect(proposalWorkspaceJson.workspace.repositoryBindingSource).toEqual({
+    kind: "catalog_grant",
+    id: catalogGrantId,
+  });
+  expect(updateResponse.response.status).toBe(200);
+  expect(updateResponse.payload).toMatchObject({
+    result: {
+      grant: {
+        repositoryBinding: {
+          repositoryUrl: "https://github.com/example/catalog-grant",
+          baseBranch: "develop",
+          rootPath: "catalog/",
+        },
+      },
+    },
+  });
+  expect(clearResponse.response.status).toBe(200);
+  expect(clearResponse.payload).toMatchObject({
+    result: {
+      grant: {
+        repositoryBinding: null,
+      },
+    },
+  });
+
+  const clearedProposalWorkspaceReadResponse = await app.request(`/api/proposal-workspaces/${proposalWorkspaceId}`, {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+  const clearedProposalWorkspaceJson = await clearedProposalWorkspaceReadResponse.json();
+  expect(clearedProposalWorkspaceJson.workspace.repositoryBinding).toBeNull();
+  expect(clearedProposalWorkspaceJson.workspace.repositoryBindingSource).toBeNull();
+});
+
+test("manual proposal workspaces can attach, update, clear, and read repository bindings through REST and JSON-RPC", async () => {
+  const app = createTestApp();
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const providerResponse = await app.request("/api/provider-connections", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scope: "user",
+      provider: "github",
+      label: "GitHub",
+      authType: "oauth",
+      allowedArtifactTypes: ["proposal_workspace"],
+    }),
+  });
+  const providerPayload = await providerResponse.json();
+
+  const createResponse = await app.request("/api/proposal-workspaces", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      manualOpportunity: {
+        title: "Port modernization robotics RFP",
+        sponsor: "Port Authority",
+        fundingType: "rfp",
+        amountSummary: "$250,000 fixed bid",
+        deadlineSummary: "2026-05-01",
+        geography: "United States",
+        sourceUrl: "https://example.gov/rfps/robotics",
+        notes: "Manual pursuit created without a tracked grant.",
+      },
+    }),
+  });
+  const workspaceId = (await createResponse.json()).workspace.id as string;
+
+  const attachResponse = await app.request(`/api/proposal-workspaces/${workspaceId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/manual-rfp",
+        baseBranch: "main",
+        privyGitHubAccountId: "did:privy:github-account",
+        providerConnectionId: providerPayload.connection.id,
+      },
+    }),
+  });
+
+  const updateResponse = await callJsonRpc(app, "browser_requester", "proposalWorkspaces.update", {
+    workspaceId,
+    repositoryBinding: {
+      repositoryUrl: "https://github.com/example/manual-rfp",
+      baseBranch: "develop",
+      rootPath: "manual/",
+      privyGitHubAccountId: "did:privy:github-account",
+      providerConnectionId: "github-connection",
+    },
+  });
+
+  const detailResponse = await callJsonRpc(app, "browser_requester", "proposalWorkspaces.get", {
+    workspaceId,
+  });
+
+  const clearResponse = await app.request(`/api/proposal-workspaces/${workspaceId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: null,
+    }),
+  });
+
+  const workspaceResponse = await app.request("/api/workspace", {
+    headers: {
+      authorization: "Bearer browser_requester",
+    },
+  });
+
+  expect(createResponse.status).toBe(201);
+  expect(attachResponse.status).toBe(200);
+  expect(await attachResponse.json()).toMatchObject({
+    workspace: {
+      id: workspaceId,
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/manual-rfp",
+        baseBranch: "main",
+        rootPath: "grantfinder/",
+        latestPublication: null,
+      },
+      repositoryBindingSource: {
+        kind: "proposal_workspace",
+        id: workspaceId,
+      },
+    },
+  });
+  expect(updateResponse.response.status).toBe(200);
+  expect(updateResponse.payload).toMatchObject({
+    result: {
+      workspace: {
+        repositoryBinding: {
+          repositoryUrl: "https://github.com/example/manual-rfp",
+          baseBranch: "develop",
+          rootPath: "manual/",
+        },
+      },
+    },
+  });
+  expect(detailResponse.response.status).toBe(200);
+  expect(detailResponse.payload).toMatchObject({
+    result: {
+      workspace: {
+        repositoryBindingSource: {
+          kind: "proposal_workspace",
+          id: workspaceId,
+        },
+      },
+    },
+  });
+  expect(clearResponse.status).toBe(200);
+  expect(await clearResponse.json()).toMatchObject({
+    workspace: {
+      repositoryBinding: null,
+      repositoryBindingSource: null,
+    },
+  });
+  expect(workspaceResponse.status).toBe(200);
+  expect(await workspaceResponse.json()).toMatchObject({
+    proposalWorkspaces: [
+      expect.objectContaining({
+        id: workspaceId,
+        repositoryBinding: null,
+        repositoryBindingSource: null,
+      }),
+    ],
+  });
+});
+
+test("repository-linked proposal workspaces publish through the injected adapter when updated", async () => {
+  const recorder = createPublicationRecorder();
+  const app = createTestApp({
+    publicationAdapter: recorder.adapter,
+  });
+
+  await createProfile(app, "browser_requester", {
+    name: "Requester",
+    role: "requester",
+    walletAddress: "0x0000000000000000000000000000000000000001",
+    smartWalletAddress: "0x0000000000000000000000000000000000000101",
+  });
+
+  const providerResponse = await app.request("/api/provider-connections", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      scope: "user",
+      provider: "github",
+      label: "GitHub",
+      authType: "oauth",
+      allowedArtifactTypes: ["proposal_workspace"],
+    }),
+  });
+  const providerPayload = await providerResponse.json();
+
+  const createResponse = await app.request("/api/proposal-workspaces", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      manualOpportunity: {
+        title: "Port modernization robotics RFP",
+        sponsor: "Port Authority",
+        fundingType: "rfp",
+        amountSummary: "$250,000 fixed bid",
+        deadlineSummary: "2026-05-01",
+        geography: "United States",
+        sourceUrl: "https://example.gov/rfps/robotics",
+        notes: "Manual pursuit created without a tracked grant.",
+      },
+    }),
+  });
+  const createPayload = await createResponse.json();
+  const workspaceId = createPayload.workspace.id as string;
+
+  const attachResponse = await app.request(`/api/proposal-workspaces/${workspaceId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repositoryBinding: {
+        repositoryUrl: "https://github.com/example/manual-rfp",
+        baseBranch: "main",
+        privyGitHubAccountId: "did:privy:github-account",
+        providerConnectionId: providerPayload.connection.id,
+      },
+    }),
+  });
+  expect(attachResponse.status).toBe(200);
+
+  const updateResponse = await app.request(`/api/proposal-workspaces/${workspaceId}`, {
+    method: "PATCH",
+    headers: {
+      authorization: "Bearer browser_requester",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      stage: "drafting",
+      summary: "Updated the proposal workspace summary.",
+      nextSteps: ["Validate the next draft"],
+    }),
+  });
+  const updatePayload = await updateResponse.json();
+
+  expect(updateResponse.status).toBe(200);
+  expect(recorder.commitCalls).toHaveLength(2);
+  expect(recorder.commitCalls[0]).toMatchObject({
+    branchName: "grantfinder/proposal_workspace/" + workspaceId,
+  });
+  expect(recorder.commitCalls[1]).toMatchObject({
+    branchName: "grantfinder/proposal_workspace/" + workspaceId,
+  });
+  expect((recorder.commitCalls[1] as { files: Array<{ path: string }> }).files[0].path).toBe(
+    `grantfinder/pursuits/${workspaceId}/workspace.md`,
+  );
+  expect(updatePayload).toMatchObject({
+    workspace: {
+      repositoryBinding: {
+        latestPublication: {
+          status: "published",
+          branch: `grantfinder/proposal_workspace/${workspaceId}`,
+          errorMessage: null,
+        },
+      },
+    },
   });
 });

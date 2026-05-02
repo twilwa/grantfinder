@@ -33,11 +33,15 @@ import type {
   PlatformResearchRequest,
   PlatformResearchScenario,
   PlatformResearchSteeringNote,
+  PlatformRepositoryBinding,
+  PlatformRepositoryPublication,
   PlatformState,
   PlatformTrackedGrant,
   PlatformUser,
+  RepositoryPublicationStatus,
 } from "./platform-types.js";
 import { createEmptyPlatformState } from "./platform-types.js";
+import { DEFAULT_REPOSITORY_ROOT_PATH } from "./platform-types.js";
 
 interface Queryable {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -103,6 +107,57 @@ function parseJsonText<T>(value: unknown, fallback: T): T {
   }
 
   return JSON.parse(value) as T;
+}
+
+function isRepositoryPublicationStatus(value: unknown): value is RepositoryPublicationStatus {
+  return value === "blocked" || value === "failed" || value === "published";
+}
+
+function toRepositoryPublication(value: unknown): PlatformRepositoryPublication | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    status: isRepositoryPublicationStatus(record.status) ? record.status : "blocked",
+    branch: typeof record.branch === "string" ? record.branch : null,
+    commitSha: typeof record.commitSha === "string" ? record.commitSha : null,
+    pullRequestUrl: typeof record.pullRequestUrl === "string" ? record.pullRequestUrl : null,
+    publishedAt: typeof record.publishedAt === "string" ? record.publishedAt : null,
+    errorMessage: typeof record.errorMessage === "string" ? record.errorMessage : null,
+  };
+}
+
+function toRepositoryBinding(value: unknown): PlatformRepositoryBinding | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const rootPath = typeof record.rootPath === "string" && record.rootPath.trim() ? record.rootPath : DEFAULT_REPOSITORY_ROOT_PATH;
+  const repositoryUrl = typeof record.repositoryUrl === "string" ? record.repositoryUrl : "";
+  const baseBranch = typeof record.baseBranch === "string" ? record.baseBranch : "";
+  const privyGitHubAccountId = typeof record.privyGitHubAccountId === "string" ? record.privyGitHubAccountId : "";
+  const providerConnectionId = typeof record.providerConnectionId === "string" ? record.providerConnectionId : "";
+  const attachedByUserId = typeof record.attachedByUserId === "string" ? record.attachedByUserId : "";
+  const attachedAt = typeof record.attachedAt === "string" ? record.attachedAt : "";
+  const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : attachedAt;
+  if (!repositoryUrl || !baseBranch || !privyGitHubAccountId || !providerConnectionId || !attachedByUserId || !attachedAt) {
+    return null;
+  }
+
+  return {
+    repositoryUrl,
+    baseBranch,
+    rootPath,
+    privyGitHubAccountId,
+    providerConnectionId,
+    attachedByUserId,
+    attachedAt,
+    updatedAt,
+    latestPublication: toRepositoryPublication(record.latestPublication),
+  };
 }
 
 function now(): string {
@@ -451,6 +506,7 @@ function toTrackedGrant(row: Record<string, unknown>): PlatformTrackedGrant {
     citations: parseJsonText<string[]>(row.citations_json, []),
     nextActions: parseJsonText<string[]>(row.next_actions_json, []),
     queueState: row.queue_state === "inactive" ? "inactive" : "active",
+    repositoryBinding: toRepositoryBinding(parseJsonText(row.repository_binding_json, null)),
     proposalWorkspaceId: row.proposal_workspace_id ? String(row.proposal_workspace_id) : null,
     proposalJobId: row.proposal_job_id ? String(row.proposal_job_id) : null,
     createdAt: String(row.created_at),
@@ -501,6 +557,7 @@ function toGrantCatalogEntry(row: Record<string, unknown>): PlatformGrantCatalog
     citations: parseJsonText<string[]>(row.citations_json, []),
     nextActions: parseJsonText<string[]>(row.next_actions_json, []),
     tags: parseJsonText<string[]>(row.tags_json, []),
+    repositoryBinding: toRepositoryBinding(parseJsonText(row.repository_binding_json, null)),
     provenanceNotes: row.provenance_notes ? String(row.provenance_notes) : null,
     freshnessNotes: row.freshness_notes ? String(row.freshness_notes) : null,
     pursuitNotes: row.pursuit_notes ? String(row.pursuit_notes) : null,
@@ -698,6 +755,7 @@ function toProposalWorkspace(row: Record<string, unknown>): PlatformProposalWork
     organizationId: row.organization_id ? String(row.organization_id) : null,
     trackedGrantId: row.tracked_grant_id ? String(row.tracked_grant_id) : null,
     catalogGrantId: row.catalog_grant_id ? String(row.catalog_grant_id) : null,
+    repositoryBinding: toRepositoryBinding(parseJsonText(row.repository_binding_json, null)),
     opportunity: toProposalOpportunity(parseJsonText(row.opportunity_json, null)),
     stage:
       row.stage === "drafting"
@@ -753,8 +811,10 @@ function toAgentExecutionRecord(row: Record<string, unknown>): PlatformAgentExec
     actorUserId: String(row.actor_user_id),
     providerConnectionId: String(row.provider_connection_id),
     targetType:
-      row.target_type === "grant_catalog_entry"
-        ? "grant_catalog_entry"
+      row.target_type === "tracked_grant"
+        ? "tracked_grant"
+        : row.target_type === "grant_catalog_entry"
+          ? "grant_catalog_entry"
         : row.target_type === "application_workspace"
           ? "application_workspace"
           : row.target_type === "proposal_workspace"
@@ -1954,6 +2014,7 @@ class PostgresStore {
             request_id,
             requester_id,
             catalog_grant_id,
+            repository_binding_json,
             title,
             sponsor,
             funding_type,
@@ -1974,13 +2035,14 @@ class PostgresStore {
           ) values (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
             $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-            $21
+            $21, $22
           )`,
           [
             grant.id,
             grant.requestId,
             grant.requesterId,
             grant.catalogGrantId,
+            grant.repositoryBinding ? JSON.stringify(grant.repositoryBinding) : null,
             grant.title,
             grant.sponsor,
             grant.fundingType,
@@ -2026,15 +2088,17 @@ class PostgresStore {
     const result = await this.database.query(
       `update tracked_grants
        set catalog_grant_id = $2,
-           queue_state = $3,
-           proposal_workspace_id = $4,
-           proposal_job_id = $5,
-           updated_at = $6
+           repository_binding_json = $3,
+           queue_state = $4,
+           proposal_workspace_id = $5,
+           proposal_job_id = $6,
+           updated_at = $7
        where id = $1
        returning *`,
       [
         grant.id,
         grant.catalogGrantId,
+        grant.repositoryBinding ? JSON.stringify(grant.repositoryBinding) : null,
         grant.queueState,
         grant.proposalWorkspaceId,
         grant.proposalJobId,
@@ -2127,6 +2191,7 @@ class PostgresStore {
         source_grant_id,
         source_report_id,
         last_research_request_id,
+        repository_binding_json,
         title,
         sponsor,
         funding_type,
@@ -2149,7 +2214,7 @@ class PostgresStore {
       ) values (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, $24, $25
+        $21, $22, $23, $24, $25, $26
       )
       on conflict (id)
       do update set
@@ -2158,6 +2223,7 @@ class PostgresStore {
         source_grant_id = excluded.source_grant_id,
         source_report_id = excluded.source_report_id,
         last_research_request_id = excluded.last_research_request_id,
+        repository_binding_json = excluded.repository_binding_json,
         title = excluded.title,
         sponsor = excluded.sponsor,
         funding_type = excluded.funding_type,
@@ -2184,6 +2250,7 @@ class PostgresStore {
         grant.sourceGrantId,
         grant.sourceReportId,
         grant.lastResearchRequestId,
+        grant.repositoryBinding ? JSON.stringify(grant.repositoryBinding) : null,
         grant.title,
         grant.sponsor,
         grant.fundingType,
@@ -2393,6 +2460,7 @@ class PostgresStore {
         organization_id,
         tracked_grant_id,
         catalog_grant_id,
+        repository_binding_json,
         opportunity_json,
         stage,
         summary,
@@ -2409,7 +2477,7 @@ class PostgresStore {
         updated_at
       ) values (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
       )
       returning *`,
       [
@@ -2418,6 +2486,7 @@ class PostgresStore {
         workspace.organizationId,
         workspace.trackedGrantId,
         workspace.catalogGrantId,
+        workspace.repositoryBinding ? JSON.stringify(workspace.repositoryBinding) : null,
         JSON.stringify(workspace.opportunity),
         workspace.stage,
         workspace.summary,
@@ -2462,19 +2531,20 @@ class PostgresStore {
        set organization_id = $2,
            tracked_grant_id = $3,
            catalog_grant_id = $4,
-           opportunity_json = $5,
-           stage = $6,
-           summary = $7,
-           next_steps_json = $8,
-           open_questions_json = $9,
-           primary_application_workspace_id = $10,
-           feasibility_snapshot_json = $11,
-           contacts_json = $12,
-           outreach_events_json = $13,
-           outcome_json = $14,
-           proposal_job_id = $15,
-           engagement_id = $16,
-           updated_at = $17
+           repository_binding_json = $5,
+           opportunity_json = $6,
+           stage = $7,
+           summary = $8,
+           next_steps_json = $9,
+           open_questions_json = $10,
+           primary_application_workspace_id = $11,
+           feasibility_snapshot_json = $12,
+           contacts_json = $13,
+           outreach_events_json = $14,
+           outcome_json = $15,
+           proposal_job_id = $16,
+           engagement_id = $17,
+           updated_at = $18
        where id = $1
        returning *`,
       [
@@ -2482,6 +2552,7 @@ class PostgresStore {
         workspace.organizationId,
         workspace.trackedGrantId,
         workspace.catalogGrantId,
+        workspace.repositoryBinding ? JSON.stringify(workspace.repositoryBinding) : null,
         JSON.stringify(workspace.opportunity),
         workspace.stage,
         workspace.summary,
@@ -2780,13 +2851,14 @@ class PostgresStore {
       alter table research_requests add column if not exists research_focus text
     `);
     await this.database.query(`
-      create table if not exists tracked_grants (
-        id text primary key,
-        request_id text not null references research_requests (id) on delete cascade,
-        requester_id text not null references users (id) on delete cascade,
-        title text not null,
-        sponsor text not null,
-        funding_type text not null,
+        create table if not exists tracked_grants (
+          id text primary key,
+          request_id text not null references research_requests (id) on delete cascade,
+          requester_id text not null references users (id) on delete cascade,
+          repository_binding_json text,
+          title text not null,
+          sponsor text not null,
+          funding_type text not null,
         fit_score integer not null,
         why_fit text not null,
         eligibility_notes_json text not null,
@@ -2805,6 +2877,9 @@ class PostgresStore {
     `);
     await this.database.query(`
       alter table tracked_grants add column if not exists proposal_workspace_id text
+    `);
+    await this.database.query(`
+      alter table tracked_grants add column if not exists repository_binding_json text
     `);
     await this.database.query(`
       create table if not exists grant_reports (
@@ -2829,6 +2904,7 @@ class PostgresStore {
         source_grant_id text unique,
         source_report_id text,
         last_research_request_id text references research_requests (id) on delete set null,
+        repository_binding_json text,
         title text not null,
         sponsor text not null,
         funding_type text not null,
@@ -2864,6 +2940,9 @@ class PostgresStore {
     `);
     await this.database.query(`
       alter table grant_catalog_entries add column if not exists last_validated_at text
+    `);
+    await this.database.query(`
+      alter table grant_catalog_entries add column if not exists repository_binding_json text
     `);
     await this.database.query(`
       alter table grant_catalog_entries drop constraint if exists grant_catalog_entries_source_type_check
@@ -2939,6 +3018,7 @@ class PostgresStore {
         organization_id text references organizations (id) on delete set null,
         tracked_grant_id text unique,
         catalog_grant_id text,
+        repository_binding_json text,
         opportunity_json text not null,
         stage text not null check (
           stage in ('qualifying', 'drafting', 'outreach', 'submitted', 'awarded', 'declined', 'no_bid')
@@ -2959,6 +3039,9 @@ class PostgresStore {
     `);
     await this.database.query(`
       alter table proposal_workspaces add column if not exists catalog_grant_id text
+    `);
+    await this.database.query(`
+      alter table proposal_workspaces add column if not exists repository_binding_json text
     `);
     await this.database.query(`
       create table if not exists agent_provider_connections (

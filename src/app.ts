@@ -16,14 +16,17 @@ import {
   AppError,
   type FundingResearchRunner,
   type FundingResearchSessionFactory,
+  type RepositoryBindingInput,
 } from "./services.js";
 import { ApplicationStore, type ApplicationStoreOptions } from "./store.js";
 import type { BrowserClientConfig, FundingChallenge, X402Settings } from "./platform-types.js";
+import type { RepositoryPublicationAdapter } from "./repository-publication.js";
 
 export interface AppOptions extends ApplicationStoreOptions {
   authProvider?: BrowserAuthProvider;
   researchRunner?: FundingResearchRunner;
   researchSessionFactory?: FundingResearchSessionFactory | null;
+  publicationAdapter?: RepositoryPublicationAdapter | null;
   x402?: Partial<X402Settings>;
 }
 
@@ -84,6 +87,39 @@ function parseAuthorizationHeader(header: string | undefined): string | null {
   }
 
   return token;
+}
+
+function parseRepositoryBindingInput(value: unknown): RepositoryBindingInput | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    repositoryUrl: String(record.repositoryUrl ?? ""),
+    baseBranch: String(record.baseBranch ?? ""),
+    rootPath:
+      record.rootPath === undefined
+        ? undefined
+        : record.rootPath === null
+          ? null
+          : String(record.rootPath),
+    privyGitHubAccountId:
+      record.privyGitHubAccountId === undefined
+        ? undefined
+        : record.privyGitHubAccountId === null
+          ? null
+          : String(record.privyGitHubAccountId),
+    providerConnectionId: String(record.providerConnectionId ?? ""),
+  };
 }
 
 function extractFundingEngagementId(path: string): string {
@@ -364,6 +400,12 @@ function renderDocsPage(baseUrl: string, x402: X402Settings, clientConfig: Brows
             </ol>
           </div>
           <div class="section">
+            <h2>Repository bindings and publication</h2>
+            <p>Repository bindings can be attached, updated, or cleared on tracked grants, catalog grants, and manual proposal workspaces with <code>PATCH /api/grants/:id</code>, <code>PATCH /api/catalog/grants/:id</code>, and <code>PATCH /api/proposal-workspaces/:id</code>. The same <code>repositoryBinding</code> payload is available through <code>grants.updateQueue</code>, <code>catalog.grants.update</code>, and <code>proposalWorkspaces.update</code>.</p>
+            <p>Bindings default to the <code>grantfinder/</code> root path unless a different root is set. Reads surface the effective binding source so agents can tell whether a repository came from a tracked grant, a catalog grant, or a proposal workspace.</p>
+            <p>Live GitHub publication requires an injected and configured <code>RepositoryPublicationAdapter</code>. Without it, platform artifacts still save and publication status reports the failure. Publication writes deterministic files such as <code>research/&lt;request-id&gt;/brief.md</code>, <code>research/&lt;request-id&gt;/report.md</code>, <code>research/&lt;request-id&gt;/supporting.md</code>, <code>pursuits/&lt;proposal-workspace-id&gt;/workspace.md</code>, contacts and outreach files, application section files, and final documents. Status surfaces include branch, commit, pull request URL, blocked or failed state, and stale-artifact messaging.</p>
+          </div>
+          <div class="section">
             <h2>Browser workspace</h2>
             <p>The authenticated browser surface currently exposes request marketplace, research dashboard, my requests, my grants, proposal workspaces, organization, catalog, applications, and providers.</p>
             <p>Privy sign-in, sign-out, and embedded wallet creation remain browser-only entry points. The post-auth workflows behind those tabs are available over REST and JSON-RPC.</p>
@@ -508,6 +550,16 @@ Grantfinder exposes grant research and a paid specialist marketplace over browse
 - \`engagements.get\`
 - \`engagements.fund\`
 
+## Repository bindings and publication
+
+- Attach, update, or clear repository bindings with \`PATCH /api/grants/:id\`, \`PATCH /api/catalog/grants/:id\`, and \`PATCH /api/proposal-workspaces/:id\`.
+- Send the same \`repositoryBinding\` payload through \`grants.updateQueue\`, \`catalog.grants.update\`, and \`proposalWorkspaces.update\`.
+- Bindings default to the \`grantfinder/\` root path unless a different root path is provided.
+- Reads return the effective repository binding source so agents can see whether a repository came from a tracked grant, a catalog grant, or a proposal workspace.
+- Live GitHub publication requires an injected and configured \`RepositoryPublicationAdapter\`; without it, platform artifacts still save and publication status reports the failure.
+- Publication writes deterministic files such as \`research/<request-id>/brief.md\`, \`research/<request-id>/report.md\`, \`research/<request-id>/supporting.md\`, \`pursuits/<proposal-workspace-id>/workspace.md\`, contacts and outreach files, application section files, and final documents.
+- Publication status surfaces include branch, commit, pull request URL, blocked or failed state, and stale-artifact messaging.
+
 ## x402 funding
 
 - Funding route: \`POST /api/engagements/:id/fund\`
@@ -621,6 +673,7 @@ export function createApp(options: AppOptions = {}) {
     authProvider,
     options.researchRunner,
     researchSessionFactory,
+    options.publicationAdapter ?? null,
   );
   const x402 = resolveX402Settings(options.x402);
   const clientConfig: BrowserClientConfig = {
@@ -824,8 +877,11 @@ export function createApp(options: AppOptions = {}) {
 
   app.patch("/api/grants/:id", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
-    const payload = await parseJson<{ queueState: "active" | "inactive" }>(c.req.raw);
-    return c.json(await services.updateGrantQueueState(user, c.req.param("id"), payload.queueState));
+    const payload = await parseJson<{
+      queueState?: "active" | "inactive";
+      repositoryBinding?: RepositoryBindingInput | null;
+    }>(c.req.raw);
+    return c.json(await services.updateGrantQueueState(user, c.req.param("id"), payload));
   });
 
   app.post("/api/grants/:id/catalog-entry", async (c) => {
@@ -875,6 +931,7 @@ export function createApp(options: AppOptions = {}) {
       freshnessNotes?: string | null;
       pursuitNotes?: string | null;
       lastValidatedAt?: string | null;
+      repositoryBinding?: RepositoryBindingInput | null;
     }>(c.req.raw);
     return c.json(await services.updateCatalogGrant(user, c.req.param("id"), payload));
   });
@@ -1062,6 +1119,7 @@ export function createApp(options: AppOptions = {}) {
         summary: string;
         recordedAt: string;
       } | null;
+      repositoryBinding?: RepositoryBindingInput | null;
     }>(c.req.raw);
     return c.json(await services.updateProposalWorkspace(user, c.req.param("id"), payload));
   });
@@ -1479,6 +1537,7 @@ export function createApp(options: AppOptions = {}) {
               params.lastValidatedAt === null || typeof params.lastValidatedAt === "string"
                 ? (params.lastValidatedAt as string | null | undefined)
                 : undefined,
+            repositoryBinding: parseRepositoryBindingInput(params.repositoryBinding),
           });
           break;
         }
@@ -1700,7 +1759,15 @@ export function createApp(options: AppOptions = {}) {
           result = await services.updateGrantQueueState(
             user,
             String(params.grantId ?? ""),
-            params.queueState === "inactive" ? "inactive" : "active",
+            {
+              queueState:
+                params.queueState === "inactive"
+                  ? "inactive"
+                  : params.queueState === "active"
+                    ? "active"
+                    : undefined,
+              repositoryBinding: parseRepositoryBindingInput(params.repositoryBinding),
+            },
           );
           break;
         }
@@ -1845,6 +1912,7 @@ export function createApp(options: AppOptions = {}) {
                       recordedAt: String((params.outcome as Record<string, unknown>).recordedAt ?? ""),
                     }
                   : undefined,
+            repositoryBinding: parseRepositoryBindingInput(params.repositoryBinding),
           });
           break;
         }

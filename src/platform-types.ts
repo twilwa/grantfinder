@@ -34,11 +34,15 @@ export type ProposalFeasibilityConfidence = "high" | "medium" | "low";
 export type ProposalOutcomeStatus = "submitted" | "awarded" | "declined" | "no_bid";
 export type ProposalOutreachKind = "email" | "call" | "meeting" | "note" | "other";
 export type ProposalOutreachDirection = "outbound" | "inbound";
+export const DEFAULT_REPOSITORY_ROOT_PATH = "grantfinder/";
+export type RepositoryBindingSourceKind = "tracked_grant" | "catalog_grant" | "proposal_workspace";
+export type RepositoryPublicationStatus = "blocked" | "failed" | "published";
 export type ServiceTargetType =
   | "grant_catalog_entry"
   | "application_workspace"
   | "workspace_section"
   | "proposal_workspace";
+export type AgentExecutionTargetType = ServiceTargetType | "tracked_grant";
 export type SpecialistServiceRole = "researcher" | "writer" | "reviewer" | "submission_specialist";
 export type AgentProviderConnectionScope = "user" | "organization";
 export type AgentProviderAuthType = "byok" | "oauth";
@@ -70,6 +74,32 @@ export interface PlatformResearchSteeringNote {
   status: ResearchSteeringStatus;
   createdAt: string;
   appliedAt: string | null;
+}
+
+export interface PlatformRepositoryPublication {
+  status: RepositoryPublicationStatus;
+  branch: string | null;
+  commitSha: string | null;
+  pullRequestUrl: string | null;
+  publishedAt: string | null;
+  errorMessage: string | null;
+}
+
+export interface PlatformRepositoryBinding {
+  repositoryUrl: string;
+  baseBranch: string;
+  rootPath: string;
+  privyGitHubAccountId: string;
+  providerConnectionId: string;
+  attachedByUserId: string;
+  attachedAt: string;
+  updatedAt: string;
+  latestPublication: PlatformRepositoryPublication | null;
+}
+
+export interface PlatformRepositoryBindingSource {
+  kind: RepositoryBindingSourceKind;
+  id: string;
 }
 
 export interface PlatformUser {
@@ -240,6 +270,7 @@ export interface PlatformTrackedGrant {
   requestId: string;
   requesterId: string;
   catalogGrantId: string | null;
+  repositoryBinding: PlatformRepositoryBinding | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -280,6 +311,7 @@ export interface PlatformGrantCatalogEntry {
   sourceGrantId: string | null;
   sourceReportId: string | null;
   lastResearchRequestId: string | null;
+  repositoryBinding: PlatformRepositoryBinding | null;
   title: string;
   sponsor: string;
   fundingType: string;
@@ -421,6 +453,7 @@ export interface PlatformProposalWorkspace {
   organizationId: string | null;
   trackedGrantId: string | null;
   catalogGrantId: string | null;
+  repositoryBinding: PlatformRepositoryBinding | null;
   opportunity: PlatformProposalOpportunity;
   stage: ProposalWorkspaceStage;
   summary: string;
@@ -454,7 +487,7 @@ export interface PlatformAgentExecutionRecord {
   id: string;
   actorUserId: string;
   providerConnectionId: string;
-  targetType: ServiceTargetType;
+  targetType: AgentExecutionTargetType;
   targetId: string;
   action: string;
   outputText: string;

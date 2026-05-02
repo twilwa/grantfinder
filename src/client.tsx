@@ -3,11 +3,11 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { PrivyProvider, usePrivy, useWallets } from "@privy-io/react-auth";
+import { PrivyProvider, useLinkAccount, usePrivy, useWallets } from "@privy-io/react-auth";
 import { SmartWalletsProvider } from "@privy-io/react-auth/smart-wallets";
 import { base, baseSepolia } from "viem/chains";
 
-import type { BrowserClientConfig } from "./platform-types.js";
+import type { BrowserClientConfig, PlatformRepositoryBinding, PlatformRepositoryBindingSource } from "./platform-types.js";
 import {
   ApplicationWorkspaceView,
   CatalogWorkspaceView,
@@ -34,6 +34,7 @@ import {
 import {
   SectionCard,
   SidebarButton,
+  RepositoryBindingPanel,
   StatusBadge,
   buttonStyle,
   formCardStyle,
@@ -48,7 +49,9 @@ import {
   subtleCardStyle,
   textareaStyle,
   findSmartWalletAddress,
+  findGitHubAccountLabel,
 } from "./client-shared.js";
+import type { RepositoryBindingInput } from "./services.js";
 
 declare global {
   interface Window {
@@ -222,6 +225,8 @@ interface WorkspaceGrant {
   status: string;
   citations: string[];
   nextActions: string[];
+  repositoryBinding: PlatformRepositoryBinding | null;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
   queueState: "active" | "inactive";
   proposalWorkspaceId: string | null;
   proposalJobId: string | null;
@@ -268,6 +273,7 @@ const config = window.__GRANTFINDER_CONFIG__ ?? { privyAppId: null, x402Mode: "c
 
 function PrivyDashboardApp() {
   const { ready, authenticated, login, logout, getAccessToken, createWallet, user } = usePrivy();
+  const { linkGithub } = useLinkAccount();
   const { wallets } = useWallets();
 
   const [publicDashboard, setPublicDashboard] = useState<DashboardPayload | null>(null);
@@ -313,6 +319,8 @@ function PrivyDashboardApp() {
   const linkedAccounts = (user?.linkedAccounts as unknown[] | undefined) ?? [];
   const embeddedWalletAddress = wallets[0]?.address ?? null;
   const smartWalletAddress = findSmartWalletAddress(session?.user ?? null, linkedAccounts);
+  const githubAccountId = user?.github?.subject ?? null;
+  const githubAccountLabel = findGitHubAccountLabel(user);
 
   async function authedFetch(path: string, init?: RequestInit) {
     const accessToken = await getAccessToken();
@@ -803,9 +811,38 @@ function PrivyDashboardApp() {
     });
   }
 
+  async function updateGrantRepositoryBinding(grantId: string, repositoryBinding: RepositoryBindingInput | null) {
+    await runAction(`grant-repository-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/grants/${grantId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ repositoryBinding }),
+        }),
+      );
+      setMessage(repositoryBinding ? "Repository binding saved." : "Repository binding cleared.");
+      await refreshWorkspace();
+    });
+  }
+
+  async function updateCatalogRepositoryBinding(grantId: string, repositoryBinding: RepositoryBindingInput | null) {
+    await runAction(`catalog-repository-${grantId}`, async () => {
+      await parseJsonResponse(
+        await authedFetch(`/api/catalog/grants/${grantId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ repositoryBinding }),
+        }),
+      );
+      setMessage(repositoryBinding ? "Repository binding saved." : "Repository binding cleared.");
+      await refreshWorkspace();
+      await refreshCatalogGrantDetail(grantId);
+    });
+  }
+
   async function updateProposalWorkspace(workspaceId: string, input: ProposalWorkspaceUpdateInput) {
     const actionKey =
-      input.feasibilitySnapshot !== undefined
+      input.repositoryBinding !== undefined
+        ? `proposal-repository-${workspaceId}`
+        : input.feasibilitySnapshot !== undefined
         ? `proposal-feasibility-${workspaceId}`
         : input.contacts !== undefined
           ? `proposal-contact-${workspaceId}`
@@ -1925,6 +1962,18 @@ function PrivyDashboardApp() {
                   ))}
                 </ul>
               </div>
+              <RepositoryBindingPanel
+                surfaceKind="tracked_grant"
+                binding={selectedGrant.repositoryBinding}
+                bindingSource={selectedGrant.repositoryBindingSource}
+                providerConnections={providerConnections}
+                githubAccountId={githubAccountId}
+                githubAccountLabel={githubAccountLabel}
+                busy={busyAction === `grant-repository-${selectedGrant.id}`}
+                onSubmit={(binding) => void updateGrantRepositoryBinding(selectedGrant.id, binding)}
+                onClear={() => void updateGrantRepositoryBinding(selectedGrant.id, null)}
+                onLinkGithubAccount={() => void linkGithub()}
+              />
             </div>
           ) : (
             <p style={{ margin: 0, color: "#566154" }}>Select a tracked grant to inspect it.</p>
@@ -1953,6 +2002,9 @@ function PrivyDashboardApp() {
           workspaces={proposalWorkspaces}
           applicationWorkspaces={applicationWorkspaces}
           providerConnections={providerConnections}
+          githubAccountId={githubAccountId}
+          githubAccountLabel={githubAccountLabel}
+          onLinkGithubAccount={() => void linkGithub()}
           selectedWorkspaceId={selectedProposalWorkspaceId}
           busyAction={busyAction}
           onCreateWorkspaceFromGrant={(grantId) => void createProposalWorkspaceFromGrant(grantId)}
@@ -1973,6 +2025,11 @@ function PrivyDashboardApp() {
         onSelectGrant={setSelectedCatalogGrantId}
         onToggleBookmark={(grantId, bookmarked) => void toggleCatalogBookmark(grantId, bookmarked)}
         onSaveGrant={(grantId, input) => void saveCatalogGrant(grantId, input)}
+        providerConnections={providerConnections}
+        githubAccountId={githubAccountId}
+        githubAccountLabel={githubAccountLabel}
+        onLinkGithubAccount={() => void linkGithub()}
+        onUpdateRepositoryBinding={(grantId, binding) => void updateCatalogRepositoryBinding(grantId, binding)}
         onStartResearch={(grantId, input) => void startCatalogGrantResearch(grantId, input)}
         onSaveSchema={(grantId, input) => void saveCatalogSchema(grantId, input)}
         onCreateProposalWorkspace={(grantId) => void createCatalogProposalWorkspace(grantId)}

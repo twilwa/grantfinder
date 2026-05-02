@@ -5,6 +5,8 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import {
   SectionCard,
+  RepositoryBindingPanel,
+  RepositoryPublicationSummary,
   StatusBadge,
   buttonStyle,
   formCardStyle,
@@ -15,6 +17,8 @@ import {
   subtleCardStyle,
   textareaStyle,
 } from "./client-shared.js";
+import type { RepositoryBindingInput } from "./services.js";
+import type { PlatformRepositoryBinding, PlatformRepositoryBindingSource } from "./platform-types.js";
 
 export type ApplicationDocumentType = "grant_proposal" | "loi" | "budget_narrative" | "other";
 export type ProviderConnectionScope = "user" | "organization";
@@ -86,6 +90,8 @@ export interface CatalogGrantSummary {
   provenanceNotes: string | null;
   freshnessNotes: string | null;
   pursuitNotes: string | null;
+  repositoryBinding: PlatformRepositoryBinding | null;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
   lastValidatedAt: string | null;
   isBookmarked: boolean;
   createdAt: string;
@@ -229,6 +235,8 @@ export interface ApplicationWorkspaceSummary {
   documentType: ApplicationDocumentType;
   title: string;
   state: "draft" | "proposal";
+  repositoryBinding: PlatformRepositoryBinding | null;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
   sections: Array<
     ApplicationSectionDefinition & {
       orderIndex: number;
@@ -279,6 +287,8 @@ export interface ProposalWorkspaceSummary {
   summary: string;
   nextSteps: string[];
   openQuestions: string[];
+  repositoryBinding: PlatformRepositoryBinding | null;
+  repositoryBindingSource: PlatformRepositoryBindingSource | null;
   primaryApplicationWorkspaceId: string | null;
   primaryApplicationWorkspace: {
     id: string;
@@ -347,6 +357,7 @@ export interface ProposalWorkspaceUpdateInput {
   summary?: string;
   nextSteps?: string[];
   openQuestions?: string[];
+  repositoryBinding?: RepositoryBindingInput | null;
   feasibilitySnapshot?: {
     verdict: string;
     confidence: "high" | "medium" | "low";
@@ -544,6 +555,9 @@ export function ProposalWorkspaceView({
   workspaces,
   applicationWorkspaces,
   providerConnections,
+  githubAccountId,
+  githubAccountLabel,
+  onLinkGithubAccount,
   selectedWorkspaceId: selectedWorkspaceIdProp,
   busyAction,
   onCreateWorkspaceFromGrant,
@@ -555,6 +569,9 @@ export function ProposalWorkspaceView({
   workspaces: ProposalWorkspaceSummary[];
   applicationWorkspaces: ApplicationWorkspaceSummary[];
   providerConnections: ProviderConnectionSummary[];
+  githubAccountId: string | null;
+  githubAccountLabel: string | null;
+  onLinkGithubAccount: () => void;
   selectedWorkspaceId?: string | null;
   busyAction: string | null;
   onCreateWorkspaceFromGrant: (grantId: string) => void;
@@ -884,6 +901,19 @@ export function ProposalWorkspaceView({
                 Create or attach proposal job
               </button>
             </div>
+
+            <RepositoryBindingPanel
+              surfaceKind="proposal_workspace"
+              binding={selectedWorkspace.repositoryBinding}
+              bindingSource={selectedWorkspace.repositoryBindingSource}
+              providerConnections={providerConnections}
+              githubAccountId={githubAccountId}
+              githubAccountLabel={githubAccountLabel}
+              busy={busyAction === `proposal-repository-${selectedWorkspace.id}`}
+              onSubmit={(binding) => onUpdateWorkspace(selectedWorkspace.id, { repositoryBinding: binding })}
+              onClear={() => onUpdateWorkspace(selectedWorkspace.id, { repositoryBinding: null })}
+              onLinkGithubAccount={onLinkGithubAccount}
+            />
 
             <div style={subtleCardStyle}>
               <strong>Automation</strong>
@@ -1550,6 +1580,11 @@ export function CatalogWorkspaceView({
   onSelectGrant,
   onToggleBookmark,
   onSaveGrant,
+  providerConnections,
+  githubAccountId,
+  githubAccountLabel,
+  onLinkGithubAccount,
+  onUpdateRepositoryBinding,
   onStartResearch,
   onSaveSchema,
   onCreateProposalWorkspace,
@@ -1583,6 +1618,11 @@ export function CatalogWorkspaceView({
       lastValidatedAt: string | null;
     },
   ) => void;
+  providerConnections: Array<{ id: string; label: string; provider: string }>;
+  githubAccountId: string | null;
+  githubAccountLabel: string | null;
+  onLinkGithubAccount: () => void;
+  onUpdateRepositoryBinding: (grantId: string, binding: RepositoryBindingInput | null) => void;
   onStartResearch: (grantId: string, input: { researchFocus: string }) => void;
   onSaveSchema: (
     grantId: string,
@@ -1788,6 +1828,18 @@ export function CatalogWorkspaceView({
                 <StatusBadge label={`Validated ${formatTimestamp(detailGrant.lastValidatedAt)}`} tone="good" />
               ) : null}
             </div>
+            <RepositoryBindingPanel
+              surfaceKind="catalog_grant"
+              binding={detailGrant.repositoryBinding}
+              bindingSource={detailGrant.repositoryBindingSource}
+              providerConnections={providerConnections}
+              githubAccountId={githubAccountId}
+              githubAccountLabel={githubAccountLabel}
+              busy={busyAction === `catalog-repository-${detailGrant.id}`}
+              onSubmit={(binding) => onUpdateRepositoryBinding(detailGrant.id, binding)}
+              onClear={() => onUpdateRepositoryBinding(detailGrant.id, null)}
+              onLinkGithubAccount={onLinkGithubAccount}
+            />
             <div style={subtleCardStyle}>
               <strong>Why it fits</strong>
               <p style={{ margin: "0.45rem 0 0", color: "#566154", lineHeight: 1.55 }}>{detailGrant.whyFit}</p>
@@ -2183,7 +2235,7 @@ export function ApplicationWorkspaceView({
   const [workspaceTemplateId, setWorkspaceTemplateId] = useState<string>("");
   const [workspaceCatalogGrantId, setWorkspaceCatalogGrantId] = useState<string>("");
   const [workspaceDocumentType, setWorkspaceDocumentType] = useState<ApplicationDocumentType>("grant_proposal");
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => workspaces[0]?.id ?? null);
   const [sectionDrafts, setSectionDrafts] = useState<Record<string, string>>({});
   const [selectedProviderConnectionId, setSelectedProviderConnectionId] = useState<string>("");
 
@@ -2438,6 +2490,8 @@ export function ApplicationWorkspaceView({
                   <StatusBadge label={`Finalized ${formatTimestamp(selectedWorkspace.finalizedAt)}`} tone="good" />
                 ) : null}
               </div>
+
+              <RepositoryPublicationSummary binding={selectedWorkspace.repositoryBinding} />
 
               {selectedWorkspace.organizationPrefill ? (
                 <div style={subtleCardStyle}>

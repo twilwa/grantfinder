@@ -1,7 +1,10 @@
 // ABOUTME: Shares browser workspace styles, formatting helpers, and small UI primitives across client views.
 // ABOUTME: Keeping these exports separate lets the main client focus on state while feature views stay isolated.
 
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+
+import { DEFAULT_REPOSITORY_ROOT_PATH, type PlatformRepositoryBinding, type PlatformRepositoryBindingSource, type RepositoryBindingSourceKind } from "./platform-types.js";
+import type { RepositoryBindingInput } from "./services.js";
 
 export type StatusTone = "neutral" | "good" | "warn" | "bad";
 export type RequestStatusLike = "draft" | "running" | "completed" | "failed";
@@ -28,6 +31,13 @@ export const subtleCardStyle: CSSProperties = {
   background: "rgba(255, 255, 255, 0.5)",
   boxShadow: "none",
 };
+
+const externalLinkStyle: CSSProperties = {
+  color: "#173b28",
+  fontWeight: 600,
+};
+
+type RepositoryBindingSurfaceKind = RepositoryBindingSourceKind | "application_workspace";
 
 export const formCardStyle: CSSProperties = {
   display: "grid",
@@ -136,6 +146,312 @@ export function findSmartWalletAddress(
   });
 
   return typeof smartWallet?.address === "string" ? smartWallet.address : null;
+}
+
+export function findGitHubAccountLabel(
+  user:
+    | {
+        github?: {
+          subject: string;
+          username: string | null;
+          name: string | null;
+          email: string | null;
+        } | null;
+      }
+    | null,
+): string | null {
+  const github = user?.github;
+  if (!github) {
+    return null;
+  }
+
+  return github.username ?? github.name ?? github.email ?? github.subject ?? null;
+}
+
+function formatRepositorySourceLabel(
+  surfaceKind: RepositoryBindingSurfaceKind,
+  source: PlatformRepositoryBindingSource | null,
+): string {
+  if (!source) {
+    return "No repository source";
+  }
+
+  if (surfaceKind === "proposal_workspace") {
+    if (source.kind === "tracked_grant") {
+      return "Inherited from tracked grant";
+    }
+
+    if (source.kind === "catalog_grant") {
+      return "Inherited from catalog entry";
+    }
+
+    return "Set directly on this workspace";
+  }
+
+  if (surfaceKind === "application_workspace") {
+    if (source.kind === "tracked_grant") {
+      return "Inherited from tracked grant";
+    }
+
+    if (source.kind === "catalog_grant") {
+      return "Inherited from catalog entry";
+    }
+
+    return "Set directly on this workspace";
+  }
+
+  if (surfaceKind === "catalog_grant") {
+    return source.kind === "tracked_grant" ? "Attached to tracked grant" : "Attached to catalog grant";
+  }
+
+  return "Attached to tracked grant";
+}
+
+export function RepositoryPublicationSummary({
+  binding,
+}: {
+  binding: PlatformRepositoryBinding | null;
+}) {
+  if (!binding) {
+    return null;
+  }
+
+  const publication = binding.latestPublication;
+  const isPublished = publication?.status === "published";
+  const statusLabel = publication
+    ? publication.status === "published"
+      ? "Publication published"
+      : publication.status === "blocked"
+        ? "Publication blocked"
+        : "Publication failed"
+    : "No repository publication has been recorded yet.";
+  const statusTone = publication
+    ? publication.status === "published"
+      ? "good"
+      : publication.status === "blocked"
+        ? "warn"
+        : "bad"
+    : "warn";
+
+  return (
+    <div style={{ ...subtleCardStyle, display: "grid", gap: "0.85rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "start" }}>
+        <div>
+          <strong>Repository sync</strong>
+          <div style={{ marginTop: "0.35rem", color: "#566154", lineHeight: 1.5 }}>
+            Track the latest publication state for the connected GitHub repository.
+          </div>
+        </div>
+        <StatusBadge label={statusLabel} tone={statusTone} />
+      </div>
+
+      {isPublished && publication ? (
+        <div style={{ display: "grid", gap: "0.7rem" }}>
+          <div style={{ display: "grid", gap: "0.22rem" }}>
+            <span style={{ color: "#566154" }}>Published branch</span>
+            <a href={`${binding.repositoryUrl}/tree/${publication.branch ?? ""}`} target="_blank" rel="noreferrer" style={externalLinkStyle}>
+              {publication.branch}
+            </a>
+          </div>
+          <div style={{ display: "grid", gap: "0.22rem" }}>
+            <span style={{ color: "#566154" }}>Published commit</span>
+            <a href={`${binding.repositoryUrl}/commit/${publication.commitSha ?? ""}`} target="_blank" rel="noreferrer" style={externalLinkStyle}>
+              {publication.commitSha}
+            </a>
+          </div>
+          <div style={{ display: "grid", gap: "0.22rem" }}>
+            <span style={{ color: "#566154" }}>Pull request</span>
+            <a href={publication.pullRequestUrl ?? "#"} target="_blank" rel="noreferrer" style={externalLinkStyle}>
+              {publication.pullRequestUrl}
+            </a>
+          </div>
+          <div style={{ display: "grid", gap: "0.22rem" }}>
+            <span style={{ color: "#566154" }}>Repository root</span>
+            <span>{binding.rootPath}</span>
+          </div>
+          <div style={{ color: "#566154", lineHeight: 1.5 }}>GitHub copy is current.</div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: "0.6rem" }}>
+          <div style={{ color: "#8c5b1f", lineHeight: 1.5 }}>
+            {publication?.errorMessage ?? "No repository publication has been recorded yet."}
+          </div>
+          <div style={{ color: "#8c5b1f", lineHeight: 1.5 }}>GitHub does not yet have the latest platform artifact.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function RepositoryBindingPanel({
+  surfaceKind,
+  binding,
+  bindingSource,
+  providerConnections,
+  githubAccountId,
+  githubAccountLabel,
+  busy = false,
+  onSubmit,
+  onClear,
+  onLinkGithubAccount,
+}: {
+  surfaceKind: RepositoryBindingSurfaceKind;
+  binding: PlatformRepositoryBinding | null;
+  bindingSource: PlatformRepositoryBindingSource | null;
+  providerConnections: Array<{ id: string; label: string; provider: string }>;
+  githubAccountId: string | null;
+  githubAccountLabel: string | null;
+  busy?: boolean;
+  onSubmit: (input: RepositoryBindingInput) => void;
+  onClear: () => void;
+  onLinkGithubAccount: () => void;
+}) {
+  const defaultProviderConnectionId = providerConnections[0]?.id ?? "";
+  const [repositoryUrl, setRepositoryUrl] = useState(binding?.repositoryUrl ?? "");
+  const [baseBranch, setBaseBranch] = useState(binding?.baseBranch ?? "");
+  const [rootPath, setRootPath] = useState(binding?.rootPath ?? DEFAULT_REPOSITORY_ROOT_PATH);
+  const [providerConnectionId, setProviderConnectionId] = useState(binding?.providerConnectionId ?? defaultProviderConnectionId);
+
+  useEffect(() => {
+    setRepositoryUrl(binding?.repositoryUrl ?? "");
+    setBaseBranch(binding?.baseBranch ?? "");
+    setRootPath(binding?.rootPath ?? DEFAULT_REPOSITORY_ROOT_PATH);
+    setProviderConnectionId(binding?.providerConnectionId ?? defaultProviderConnectionId);
+  }, [binding?.repositoryUrl, binding?.baseBranch, binding?.rootPath, binding?.providerConnectionId, defaultProviderConnectionId]);
+
+  function submitBinding(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!githubAccountId || busy) {
+      return;
+    }
+
+    onSubmit({
+      repositoryUrl: repositoryUrl.trim(),
+      baseBranch: baseBranch.trim(),
+      rootPath: rootPath.trim() || DEFAULT_REPOSITORY_ROOT_PATH,
+      privyGitHubAccountId: githubAccountId,
+      providerConnectionId,
+    });
+  }
+
+  const sourceLabel = formatRepositorySourceLabel(surfaceKind, bindingSource);
+  const canClear = Boolean(binding) && (surfaceKind !== "proposal_workspace" || bindingSource?.kind === "proposal_workspace");
+
+  return (
+    <div style={{ ...subtleCardStyle, display: "grid", gap: "0.85rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "start" }}>
+        <div>
+          <strong>Repository binding</strong>
+          <div style={{ marginTop: "0.35rem", color: "#566154", lineHeight: 1.5 }}>
+            Attach the GitHub repository that receives Grantfinder-managed artifacts.
+          </div>
+        </div>
+        <StatusBadge label={binding ? "Linked" : "Not linked"} tone={binding ? "good" : "warn"} />
+      </div>
+
+      <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap" }}>
+        <StatusBadge
+          label={sourceLabel}
+          tone={surfaceKind === "proposal_workspace" && bindingSource && bindingSource.kind !== "proposal_workspace" ? "warn" : "neutral"}
+        />
+        {binding ? <StatusBadge label={`Root path ${binding.rootPath}`} tone="neutral" /> : <StatusBadge label={`Root path ${DEFAULT_REPOSITORY_ROOT_PATH}`} tone="neutral" />}
+        {githubAccountLabel ? <StatusBadge label={githubAccountLabel} tone="good" /> : null}
+      </div>
+
+      <RepositoryPublicationSummary binding={binding} />
+
+      <form onSubmit={submitBinding} style={formCardStyle}>
+        <label style={{ display: "grid", gap: "0.35rem" }}>
+          <span>Repository URL</span>
+          <input
+            style={inputStyle}
+            value={repositoryUrl}
+            onChange={(event) => setRepositoryUrl(event.target.value)}
+            placeholder="https://github.com/org/repository"
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: "0.35rem" }}>
+          <span>Base branch</span>
+          <input
+            style={inputStyle}
+            value={baseBranch}
+            onChange={(event) => setBaseBranch(event.target.value)}
+            placeholder="main"
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: "0.35rem" }}>
+          <span>Repository root path</span>
+          <input
+            style={inputStyle}
+            value={rootPath}
+            onChange={(event) => setRootPath(event.target.value)}
+            placeholder={DEFAULT_REPOSITORY_ROOT_PATH}
+          />
+          <span style={{ color: "#566154", lineHeight: 1.45 }}>Defaults to {DEFAULT_REPOSITORY_ROOT_PATH} when left blank.</span>
+        </label>
+
+        <label style={{ display: "grid", gap: "0.35rem" }}>
+          <span>Provider connection</span>
+          <select style={inputStyle} value={providerConnectionId} onChange={(event) => setProviderConnectionId(event.target.value)}>
+            <option value="">Select a provider connection</option>
+            {providerConnections.map((connection) => (
+              <option key={connection.id} value={connection.id}>
+                {connection.label} ({connection.provider})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {githubAccountId ? (
+          <div style={{ color: "#566154", lineHeight: 1.5 }}>
+            GitHub account: {githubAccountLabel ?? githubAccountId}
+          </div>
+        ) : (
+          <div style={{ ...subtleCardStyle, background: "rgba(244, 225, 200, 0.45)" }}>
+            <StatusBadge label="GitHub account required" tone="warn" />
+            <div style={{ marginTop: "0.45rem", color: "#566154", lineHeight: 1.5 }}>
+              Link your GitHub account in Privy before attaching a repository.
+            </div>
+            <button
+              type="button"
+              onClick={onLinkGithubAccount}
+              style={{ ...buttonStyle(false, "secondary"), marginTop: "0.75rem" }}
+            >
+              Link GitHub account
+            </button>
+          </div>
+        )}
+
+        {binding ? (
+          <a href={binding.repositoryUrl} target="_blank" rel="noreferrer" style={externalLinkStyle}>
+            Open repository
+          </a>
+        ) : null}
+
+        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.25rem" }}>
+          <button
+            type="submit"
+            disabled={busy || !githubAccountId || !providerConnectionId || !repositoryUrl.trim() || !baseBranch.trim()}
+            style={buttonStyle(busy || !githubAccountId || !providerConnectionId || !repositoryUrl.trim() || !baseBranch.trim())}
+          >
+            {binding ? "Update repository" : "Attach repository"}
+          </button>
+          {canClear ? (
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={busy}
+              style={buttonStyle(busy, "secondary")}
+            >
+              Clear repository
+            </button>
+          ) : null}
+        </div>
+      </form>
+    </div>
+  );
 }
 
 export async function parseJsonResponse<T>(response: Response): Promise<T> {
