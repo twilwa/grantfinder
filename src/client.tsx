@@ -51,6 +51,14 @@ import {
   findSmartWalletAddress,
   findGitHubAccountLabel,
 } from "./client-shared.js";
+import {
+  FeatureFlagAdminPanel,
+  isFeatureEnabled,
+  type AdminFeatureFlag,
+  type FeatureFlagInput,
+  type FeatureFlagTargetInput,
+} from "./client-feature-flags.js";
+import { DesignDemoApp } from "./design-demo.js";
 import type { RepositoryBindingInput } from "./services.js";
 
 declare global {
@@ -69,7 +77,13 @@ type WorkspaceTab =
   | "organization"
   | "catalog"
   | "applications"
-  | "providers";
+  | "providers"
+  | "feature-flags"
+  | "beta-preview";
+
+// Feature key the client gates the piloted "Beta preview" surface on. An administrator
+// creates a flag with this key and targets it to roll the surface out incrementally.
+const BETA_PREVIEW_FEATURE_KEY = "beta-sidebar";
 
 interface PublicUser {
   id: string;
@@ -137,6 +151,10 @@ interface SessionPayload {
     privyUserId: string;
   };
   user: PublicUser | null;
+  // Resolved set of enabled feature keys for this user; targeting rules never reach the client.
+  enabledFeatures?: string[];
+  // True when the verified user is a Platform administrator (env allowlist, resolved server-side).
+  isPlatformAdministrator?: boolean;
 }
 
 interface TokenPayload {
@@ -280,6 +298,7 @@ function PrivyDashboardApp() {
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [requestDetail, setRequestDetail] = useState<ResearchRequestDetail | null>(null);
   const [session, setSession] = useState<SessionPayload | null>(null);
+  const [featureFlags, setFeatureFlags] = useState<AdminFeatureFlag[]>([]);
   const [tokens, setTokens] = useState<TokenPayload["tokens"]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -412,9 +431,11 @@ function PrivyDashboardApp() {
         const tokenPayload = await parseJsonResponse<TokenPayload>(tokenResponse);
         setTokens(tokenPayload.tokens);
         await refreshWorkspace();
+        await refreshFeatureFlags(nextSession.isPlatformAdministrator ?? false);
       } else {
         setTokens([]);
         setWorkspace(null);
+        setFeatureFlags([]);
       }
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : "Failed to load session.");
@@ -440,6 +461,87 @@ function PrivyDashboardApp() {
     } finally {
       setBusyAction(null);
     }
+  }
+
+  // Loads the administrator flag catalog. Non-administrators receive no catalog and see no admin surface.
+  async function refreshFeatureFlags(isAdministrator: boolean) {
+    if (!authenticated || !isAdministrator) {
+      setFeatureFlags([]);
+      return;
+    }
+
+    try {
+      const response = await authedFetch("/api/admin/feature-flags");
+      if (!response.ok) {
+        setFeatureFlags([]);
+        return;
+      }
+
+      const payload = await parseJsonResponse<{ flags: AdminFeatureFlag[] }>(response);
+      setFeatureFlags(payload.flags);
+    } catch {
+      setFeatureFlags([]);
+    }
+  }
+
+  async function createFeatureFlag(input: FeatureFlagInput) {
+    await runAction("feature-flag-create", async () => {
+      const response = await authedFetch("/api/admin/feature-flags", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      await parseJsonResponse(response);
+      setMessage(`Created feature flag ${input.key}.`);
+      await refreshFeatureFlags(true);
+    });
+  }
+
+  async function updateFeatureFlag(flagId: string, input: FeatureFlagInput) {
+    await runAction("feature-flag-update", async () => {
+      const response = await authedFetch(`/api/admin/feature-flags/${flagId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ description: input.description, defaultEnabled: input.defaultEnabled }),
+      });
+      await parseJsonResponse(response);
+      setMessage("Feature flag updated.");
+      await refreshFeatureFlags(true);
+    });
+  }
+
+  async function deleteFeatureFlag(flagId: string) {
+    await runAction("feature-flag-delete", async () => {
+      const response = await authedFetch(`/api/admin/feature-flags/${flagId}`, { method: "DELETE" });
+      if (!response.ok) {
+        await parseJsonResponse(response);
+      }
+      setMessage("Feature flag deleted.");
+      await refreshFeatureFlags(true);
+    });
+  }
+
+  async function setFeatureFlagTarget(flagId: string, input: FeatureFlagTargetInput) {
+    await runAction("feature-flag-target", async () => {
+      const response = await authedFetch(`/api/admin/feature-flags/${flagId}/targets`, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      });
+      await parseJsonResponse(response);
+      setMessage("Targeting rule saved.");
+      await refreshFeatureFlags(true);
+    });
+  }
+
+  async function deleteFeatureFlagTarget(targetId: string) {
+    await runAction("feature-flag-target-delete", async () => {
+      const response = await authedFetch(`/api/admin/feature-flags/targets/${targetId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        await parseJsonResponse(response);
+      }
+      setMessage("Targeting rule removed.");
+      await refreshFeatureFlags(true);
+    });
   }
 
   useEffect(() => {
@@ -1188,6 +1290,9 @@ function PrivyDashboardApp() {
   const needsProfile = authenticated && session?.user === null;
   const isRequester = session?.user?.role === "requester";
   const isSpecialist = session?.user?.role === "specialist";
+  const enabledFeatures = session?.enabledFeatures ?? [];
+  const isPlatformAdministrator = session?.isPlatformAdministrator ?? false;
+  const hasFeature = (key: string) => isFeatureEnabled(enabledFeatures, key);
   const dashboard = workspace?.marketplace ?? publicDashboard;
   const scenarios = workspace?.scenarios ?? [];
   const requests = workspace?.requests ?? [];
@@ -2071,6 +2176,34 @@ function PrivyDashboardApp() {
     );
   }
 
+  function renderBetaPreviewTab() {
+    return (
+      <SectionCard
+        title="Beta preview"
+        description="A piloted surface shown only to audiences with the beta-sidebar feature enabled."
+      >
+        <p style={{ margin: 0, color: "#566154", lineHeight: 1.5 }}>
+          You are seeing this because the <strong>{BETA_PREVIEW_FEATURE_KEY}</strong> feature is
+          enabled for your account. Other users see the baseline experience without this tab.
+        </p>
+      </SectionCard>
+    );
+  }
+
+  function renderFeatureFlagsTab() {
+    return (
+      <FeatureFlagAdminPanel
+        flags={featureFlags}
+        busy={busyAction !== null}
+        onCreateFlag={(input) => void createFeatureFlag(input)}
+        onUpdateFlag={(flagId, input) => void updateFeatureFlag(flagId, input)}
+        onDeleteFlag={(flagId) => void deleteFeatureFlag(flagId)}
+        onSetTarget={(flagId, input) => void setFeatureFlagTarget(flagId, input)}
+        onDeleteTarget={(_flagId, targetId) => void deleteFeatureFlagTarget(targetId)}
+      />
+    );
+  }
+
   function renderWorkspace() {
     if (!session?.user || !workspace || !dashboard) {
       return null;
@@ -2152,6 +2285,24 @@ function PrivyDashboardApp() {
                 tabId="providers"
                 onClick={() => setActiveTab("providers")}
               />
+              {hasFeature(BETA_PREVIEW_FEATURE_KEY) ? (
+                <SidebarButton
+                  active={activeTab === "beta-preview"}
+                  label="Beta preview"
+                  description="A piloted surface gated behind a feature flag."
+                  tabId="beta-preview"
+                  onClick={() => setActiveTab("beta-preview")}
+                />
+              ) : null}
+              {isPlatformAdministrator ? (
+                <SidebarButton
+                  active={activeTab === "feature-flags"}
+                  label="Feature flags"
+                  description="Create flags and target features to users, organizations, or roles."
+                  tabId="feature-flags"
+                  onClick={() => setActiveTab("feature-flags")}
+                />
+              ) : null}
             </div>
           </section>
 
@@ -2226,6 +2377,8 @@ function PrivyDashboardApp() {
           {activeTab === "catalog" ? renderCatalogTab() : null}
           {activeTab === "applications" ? renderApplicationsTab() : null}
           {activeTab === "providers" ? renderProvidersTab() : null}
+          {activeTab === "beta-preview" && hasFeature(BETA_PREVIEW_FEATURE_KEY) ? renderBetaPreviewTab() : null}
+          {activeTab === "feature-flags" && isPlatformAdministrator ? renderFeatureFlagsTab() : null}
           {fundingChallenge ? (
             <SectionCard
               title="Latest funding challenge"
@@ -2384,6 +2537,10 @@ function PrivyDashboardApp() {
 }
 
 function BrowserApp() {
+  if (window.location.pathname === "/demo") {
+    return <DesignDemoApp />;
+  }
+
   if (!config.privyAppId) {
     return (
       <section style={shellCardStyle}>
