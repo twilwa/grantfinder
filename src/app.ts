@@ -299,11 +299,11 @@ function pageShell(title: string, body: string): string {
 </html>`;
 }
 
-function renderAppShell(config: BrowserClientConfig): string {
+function renderAppShell(config: BrowserClientConfig, title = "Grantfinder"): string {
   const serializedConfig = escapeInlineScriptJson(config);
 
   return pageShell(
-    "Grantfinder",
+    title,
     `<section class="panel hero">
         <div class="eyebrow">Grantfinder Marketplace</div>
         <h1>Research grants, hire a specialist, fund the work over x402.</h1>
@@ -313,11 +313,31 @@ function renderAppShell(config: BrowserClientConfig): string {
         </p>
         <nav class="nav" aria-label="Primary">
           <a href="/">Dashboard</a>
+          <a href="/demo">Design Demo</a>
           <a href="/docs">Docs</a>
           <a href="/skill.md">skill.md</a>
         </nav>
       </section>
       <section class="panel section">
+        <div id="app"></div>
+      </section>
+      <script>window.__GRANTFINDER_CONFIG__ = ${serializedConfig};</script>
+      <script type="module" src="/assets/client.js"></script>`,
+  );
+}
+
+function renderDesignDemoShell(config: BrowserClientConfig): string {
+  const serializedConfig = escapeInlineScriptJson(config);
+
+  return pageShell(
+    "Grantfinder Design Demo",
+    `<section class="panel section">
+        <nav class="nav" aria-label="Primary" style="margin: 0 0 1rem;">
+          <a href="/">Dashboard</a>
+          <a href="/demo">Design Demo</a>
+          <a href="/docs">Docs</a>
+          <a href="/skill.md">skill.md</a>
+        </nav>
         <div id="app"></div>
       </section>
       <script>window.__GRANTFINDER_CONFIG__ = ${serializedConfig};</script>
@@ -707,6 +727,7 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.get("/", (c) => c.html(renderAppShell(clientConfig)));
+  app.get("/demo", (c) => c.html(renderDesignDemoShell(clientConfig)));
   app.get("/health", (c) => c.json({ status: "ok" }));
   app.get("/favicon.ico", () => new Response(null, { status: 204 }));
   app.get("/docs", (c) => c.html(renderDocsPage(new URL(c.req.url).origin, x402, clientConfig)));
@@ -750,6 +771,39 @@ export function createApp(options: AppOptions = {}) {
   app.delete("/api/auth/tokens/:id", async (c) => {
     const user = await services.authenticate(parseAuthorizationHeader(c.req.header("authorization")));
     return c.json(await services.revokeAgentToken(user, c.req.param("id")));
+  });
+
+  app.get("/api/admin/feature-flags", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    return c.json(await services.listFeatureFlags(token));
+  });
+
+  app.post("/api/admin/feature-flags", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    const payload = await parseJson<{ key: string; description?: string; defaultEnabled?: boolean }>(c.req.raw);
+    return c.json(await services.createFeatureFlag(token, payload), 201);
+  });
+
+  app.patch("/api/admin/feature-flags/:id", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    const payload = await parseJson<{ description?: string; defaultEnabled?: boolean }>(c.req.raw);
+    return c.json(await services.updateFeatureFlag(token, c.req.param("id"), payload));
+  });
+
+  app.delete("/api/admin/feature-flags/:id", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    return c.json(await services.deleteFeatureFlag(token, c.req.param("id")));
+  });
+
+  app.put("/api/admin/feature-flags/:id/targets", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    const payload = await parseJson<{ audienceType: string; audienceId: string; enabled?: boolean }>(c.req.raw);
+    return c.json(await services.setFeatureFlagTarget(token, c.req.param("id"), payload), 201);
+  });
+
+  app.delete("/api/admin/feature-flags/targets/:targetId", async (c) => {
+    const token = parseAuthorizationHeader(c.req.header("authorization"));
+    return c.json(await services.deleteFeatureFlagTarget(token, c.req.param("targetId")));
   });
 
   app.get("/api/organization", async (c) => {
@@ -1264,6 +1318,35 @@ export function createApp(options: AppOptions = {}) {
           });
           break;
         }
+        case "admin.featureFlags.list":
+          result = await services.listFeatureFlags(authToken);
+          break;
+        case "admin.featureFlags.create":
+          result = await services.createFeatureFlag(authToken, {
+            key: String(params.key ?? ""),
+            description: typeof params.description === "string" ? params.description : undefined,
+            defaultEnabled: typeof params.defaultEnabled === "boolean" ? params.defaultEnabled : undefined,
+          });
+          break;
+        case "admin.featureFlags.update":
+          result = await services.updateFeatureFlag(authToken, String(params.flagId ?? ""), {
+            description: typeof params.description === "string" ? params.description : undefined,
+            defaultEnabled: typeof params.defaultEnabled === "boolean" ? params.defaultEnabled : undefined,
+          });
+          break;
+        case "admin.featureFlags.delete":
+          result = await services.deleteFeatureFlag(authToken, String(params.flagId ?? ""));
+          break;
+        case "admin.featureFlags.targets.set":
+          result = await services.setFeatureFlagTarget(authToken, String(params.flagId ?? ""), {
+            audienceType: String(params.audienceType ?? ""),
+            audienceId: String(params.audienceId ?? ""),
+            enabled: typeof params.enabled === "boolean" ? params.enabled : undefined,
+          });
+          break;
+        case "admin.featureFlags.targets.delete":
+          result = await services.deleteFeatureFlagTarget(authToken, String(params.targetId ?? ""));
+          break;
         case "organization.get": {
           const user = await services.authenticate(authToken);
           result = await services.getOrganization(user);

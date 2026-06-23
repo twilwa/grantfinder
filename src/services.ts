@@ -16,6 +16,9 @@ import type {
   AgentProviderConnectionScope,
   ApplicationDocumentType,
   ApplicationWorkspaceState,
+  FeatureAudienceType,
+  PlatformFeatureFlag,
+  PlatformFeatureFlagTarget,
   PlatformAgentToken,
   PlatformAgentExecutionRecord,
   PlatformAgentProviderConnection,
@@ -70,6 +73,7 @@ import {
   type RepositoryPublicationAdapter,
 } from "./repository-publication.js";
 import { ApplicationStore } from "./store.js";
+import { isPlatformAdministrator, resolveEnabledFeatureKeys } from "./feature-flags.js";
 import type { FundingOpportunity } from "./report.js";
 import type { BusinessScenario } from "./types.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -83,6 +87,23 @@ interface UpsertBrowserProfileInput {
 
 interface CreateAgentTokenInput {
   label?: string;
+}
+
+interface CreateFeatureFlagInput {
+  key: string;
+  description?: string;
+  defaultEnabled?: boolean;
+}
+
+interface UpdateFeatureFlagInput {
+  description?: string;
+  defaultEnabled?: boolean;
+}
+
+interface SetFeatureFlagTargetInput {
+  audienceType: string;
+  audienceId: string;
+  enabled?: boolean;
 }
 
 interface UpsertOrganizationInput {
@@ -1477,7 +1498,156 @@ export class ApplicationServices {
       authenticated: true,
       identity,
       user: user ? this.toPublicUser(user) : null,
+      isPlatformAdministrator: isPlatformAdministrator(identity.privyUserId),
+      enabledFeatures: user ? await this.resolveEnabledFeatures(user) : [],
     };
+  }
+
+  // Resolves every feature flag for one user and returns only the enabled keys.
+  // Targeting rules are evaluated server-side and never leave this method.
+  private async resolveEnabledFeatures(user: PlatformUser): Promise<string[]> {
+    const state = await this.store.readState();
+    if (state.featureFlags.length === 0) {
+      return [];
+    }
+    const organization = await this.findOrganizationForUser(user);
+    return resolveEnabledFeatureKeys(state.featureFlags, state.featureFlagTargets, {
+      userId: user.id,
+      orgId: organization?.id ?? null,
+      role: user.role,
+    });
+  }
+
+  // A request may manage feature flags only when its verified Privy user id is in
+  // the PLATFORM_ADMIN_PRIVY_IDS allowlist. This is layered on the existing auth
+  // path and does not touch the requester/specialist role model.
+  private async requirePlatformAdministrator(
+    accessToken: string | null | undefined,
+  ): Promise<PlatformSessionIdentity> {
+    const identity = await this.verifyBrowserIdentity(accessToken);
+    if (!isPlatformAdministrator(identity.privyUserId)) {
+      throw new AppError(403, "forbidden", "Platform administrator permissions are required for this action.");
+    }
+    return identity;
+  }
+
+  private toPublicFeatureFlagTarget(target: PlatformFeatureFlagTarget) {
+    return {
+      id: target.id,
+      flagId: target.flagId,
+      audienceType: target.audienceType,
+      audienceId: target.audienceId,
+      enabled: target.enabled,
+      createdAt: target.createdAt,
+    };
+  }
+
+  private toPublicFeatureFlag(flag: PlatformFeatureFlag, targets: PlatformFeatureFlagTarget[]) {
+    return {
+      id: flag.id,
+      key: flag.key,
+      description: flag.description,
+      defaultEnabled: flag.defaultEnabled,
+      createdAt: flag.createdAt,
+      updatedAt: flag.updatedAt,
+      targets: targets.map((target) => this.toPublicFeatureFlagTarget(target)),
+    };
+  }
+
+  async listFeatureFlags(accessToken: string | null | undefined) {
+    await this.requirePlatformAdministrator(accessToken);
+    const flags = await this.store.listFeatureFlags();
+    const flagsWithTargets = await Promise.all(
+      flags.map(async (flag) => {
+        const targets = await this.store.listFeatureFlagTargets(flag.id);
+        return this.toPublicFeatureFlag(flag, targets);
+      }),
+    );
+    return { flags: flagsWithTargets };
+  }
+
+  async createFeatureFlag(accessToken: string | null | undefined, input: CreateFeatureFlagInput) {
+    await this.requirePlatformAdministrator(accessToken);
+    const key = requireText(input.key, "key");
+    const existing = await this.store.findFeatureFlagByKey(key);
+    if (existing) {
+      throw new AppError(409, "duplicate_key", `A feature flag with key "${key}" already exists.`);
+    }
+    const timestamp = now();
+    const flag = await this.store.createFeatureFlag({
+      id: makeId("flag"),
+      key,
+      description: input.description?.trim() ?? "",
+      defaultEnabled: Boolean(input.defaultEnabled),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    return { flag: this.toPublicFeatureFlag(flag, []) };
+  }
+
+  async updateFeatureFlag(
+    accessToken: string | null | undefined,
+    flagId: string,
+    input: UpdateFeatureFlagInput,
+  ) {
+    await this.requirePlatformAdministrator(accessToken);
+    const flag = await this.store.findFeatureFlagById(requireText(flagId, "flagId"));
+    if (!flag) {
+      throw new AppError(404, "not_found", "Feature flag not found.");
+    }
+    const updated = await this.store.updateFeatureFlag({
+      ...flag,
+      description: input.description === undefined ? flag.description : input.description.trim(),
+      defaultEnabled: input.defaultEnabled === undefined ? flag.defaultEnabled : Boolean(input.defaultEnabled),
+      updatedAt: now(),
+    });
+    const targets = await this.store.listFeatureFlagTargets(updated.id);
+    return { flag: this.toPublicFeatureFlag(updated, targets) };
+  }
+
+  async deleteFeatureFlag(accessToken: string | null | undefined, flagId: string) {
+    await this.requirePlatformAdministrator(accessToken);
+    const flag = await this.store.findFeatureFlagById(requireText(flagId, "flagId"));
+    if (!flag) {
+      throw new AppError(404, "not_found", "Feature flag not found.");
+    }
+    await this.store.deleteFeatureFlag(flag.id);
+    return { ok: true };
+  }
+
+  async setFeatureFlagTarget(
+    accessToken: string | null | undefined,
+    flagId: string,
+    input: SetFeatureFlagTargetInput,
+  ) {
+    await this.requirePlatformAdministrator(accessToken);
+    const flag = await this.store.findFeatureFlagById(requireText(flagId, "flagId"));
+    if (!flag) {
+      throw new AppError(404, "not_found", "Feature flag not found.");
+    }
+    const audienceType = this.requireAudienceTypeValue(input.audienceType);
+    const target = await this.store.setFeatureFlagTarget({
+      id: makeId("flagtarget"),
+      flagId: flag.id,
+      audienceType,
+      audienceId: requireText(input.audienceId, "audienceId"),
+      enabled: Boolean(input.enabled),
+      createdAt: now(),
+    });
+    return { target: this.toPublicFeatureFlagTarget(target) };
+  }
+
+  async deleteFeatureFlagTarget(accessToken: string | null | undefined, targetId: string) {
+    await this.requirePlatformAdministrator(accessToken);
+    await this.store.deleteFeatureFlagTarget(requireText(targetId, "targetId"));
+    return { ok: true };
+  }
+
+  private requireAudienceTypeValue(value: string): FeatureAudienceType {
+    if (value !== "user" && value !== "organization" && value !== "role") {
+      throw new AppError(400, "invalid_audience", "audienceType must be user, organization, or role.");
+    }
+    return value;
   }
 
   async upsertBrowserProfile(accessToken: string | null | undefined, input: UpsertBrowserProfileInput) {
