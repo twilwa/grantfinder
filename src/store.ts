@@ -22,6 +22,8 @@ import type {
   PlatformGrantCatalogEntry,
   PlatformGrantReport,
   PlatformEngagement,
+  PlatformFeatureFlag,
+  PlatformFeatureFlagTarget,
   PlatformJob,
   PlatformOffer,
   PlatformOrganization,
@@ -166,6 +168,15 @@ function now(): string {
 
 function makeId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function sortByCreatedAt<T extends { createdAt: string; id: string }>(rows: T[]): T[] {
+  return rows.sort((a, b) => {
+    if (a.createdAt !== b.createdAt) {
+      return a.createdAt < b.createdAt ? -1 : 1;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 }
 
 function hashToken(secret: string): string {
@@ -572,6 +583,33 @@ function toGrantBookmark(row: Record<string, unknown>): PlatformGrantBookmark {
     id: String(row.id),
     userId: String(row.user_id),
     grantId: String(row.grant_catalog_entry_id),
+    createdAt: String(row.created_at),
+  };
+}
+
+function toFeatureFlag(row: Record<string, unknown>): PlatformFeatureFlag {
+  return {
+    id: String(row.id),
+    key: String(row.key),
+    description: String(row.description),
+    defaultEnabled: Boolean(row.default_enabled),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function toFeatureFlagTarget(row: Record<string, unknown>): PlatformFeatureFlagTarget {
+  return {
+    id: String(row.id),
+    flagId: String(row.flag_id),
+    audienceType:
+      row.audience_type === "user"
+        ? "user"
+        : row.audience_type === "organization"
+          ? "organization"
+          : "role",
+    audienceId: String(row.audience_id),
+    enabled: Boolean(row.enabled),
     createdAt: String(row.created_at),
   };
 }
@@ -1277,6 +1315,75 @@ class MemoryStore {
     this.state.agentExecutionRecords.push(structuredClone(record));
     return structuredClone(record);
   }
+
+  async createFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    this.state.featureFlags.push(structuredClone(flag));
+    return structuredClone(flag);
+  }
+
+  async listFeatureFlags(): Promise<PlatformFeatureFlag[]> {
+    return sortByCreatedAt(this.state.featureFlags.map((flag) => structuredClone(flag)));
+  }
+
+  async findFeatureFlagById(flagId: string): Promise<PlatformFeatureFlag | null> {
+    const flag = this.state.featureFlags.find((candidate) => candidate.id === flagId);
+    return flag ? structuredClone(flag) : null;
+  }
+
+  async findFeatureFlagByKey(key: string): Promise<PlatformFeatureFlag | null> {
+    const flag = this.state.featureFlags.find((candidate) => candidate.key === key);
+    return flag ? structuredClone(flag) : null;
+  }
+
+  async updateFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    const index = this.state.featureFlags.findIndex((candidate) => candidate.id === flag.id);
+    if (index === -1) {
+      this.state.featureFlags.push(structuredClone(flag));
+      return structuredClone(flag);
+    }
+
+    this.state.featureFlags[index] = structuredClone(flag);
+    return structuredClone(flag);
+  }
+
+  async deleteFeatureFlag(flagId: string): Promise<void> {
+    this.state.featureFlags = this.state.featureFlags.filter((flag) => flag.id !== flagId);
+    this.state.featureFlagTargets = this.state.featureFlagTargets.filter(
+      (target) => target.flagId !== flagId,
+    );
+  }
+
+  async listFeatureFlagTargets(flagId: string): Promise<PlatformFeatureFlagTarget[]> {
+    return sortByCreatedAt(
+      this.state.featureFlagTargets
+        .filter((target) => target.flagId === flagId)
+        .map((target) => structuredClone(target)),
+    );
+  }
+
+  async setFeatureFlagTarget(target: PlatformFeatureFlagTarget): Promise<PlatformFeatureFlagTarget> {
+    const index = this.state.featureFlagTargets.findIndex(
+      (candidate) =>
+        candidate.flagId === target.flagId &&
+        candidate.audienceType === target.audienceType &&
+        candidate.audienceId === target.audienceId,
+    );
+
+    if (index === -1) {
+      this.state.featureFlagTargets.push(structuredClone(target));
+      return structuredClone(target);
+    }
+
+    const existing = this.state.featureFlagTargets[index];
+    existing.enabled = target.enabled;
+    return structuredClone(existing);
+  }
+
+  async deleteFeatureFlagTarget(targetId: string): Promise<void> {
+    this.state.featureFlagTargets = this.state.featureFlagTargets.filter(
+      (target) => target.id !== targetId,
+    );
+  }
 }
 
 class PostgresStore {
@@ -1308,6 +1415,8 @@ class PostgresStore {
       proposalWorkspaces,
       agentProviderConnections,
       agentExecutionRecords,
+      featureFlags,
+      featureFlagTargets,
     ] =
       await Promise.all([
         this.database.query("select * from users order by created_at desc"),
@@ -1331,6 +1440,8 @@ class PostgresStore {
         this.database.query("select * from proposal_workspaces order by created_at desc"),
         this.database.query("select * from agent_provider_connections order by created_at desc"),
         this.database.query("select * from agent_execution_records order by created_at desc"),
+        this.database.query("select * from feature_flags order by created_at desc"),
+        this.database.query("select * from feature_flag_targets order by created_at desc"),
       ]);
 
     const paymentsByEngagement = new Map<string, PlatformPaymentRecord>();
@@ -1367,6 +1478,8 @@ class PostgresStore {
       agentExecutionRecords: (agentExecutionRecords.rows as Record<string, unknown>[]).map(
         toAgentExecutionRecord,
       ),
+      featureFlags: (featureFlags.rows as Record<string, unknown>[]).map(toFeatureFlag),
+      featureFlagTargets: (featureFlagTargets.rows as Record<string, unknown>[]).map(toFeatureFlagTarget),
     };
   }
 
@@ -2642,6 +2755,98 @@ class PostgresStore {
     return toAgentExecutionRecord(result.rows[0] as Record<string, unknown>);
   }
 
+  async createFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into feature_flags (
+        id,
+        key,
+        description,
+        default_enabled,
+        created_at,
+        updated_at
+      ) values ($1, $2, $3, $4, $5, $6)
+      returning *`,
+      [flag.id, flag.key, flag.description, flag.defaultEnabled, flag.createdAt, flag.updatedAt],
+    );
+    return toFeatureFlag(result.rows[0] as Record<string, unknown>);
+  }
+
+  async listFeatureFlags(): Promise<PlatformFeatureFlag[]> {
+    await this.ensureSchema();
+    const result = await this.database.query("select * from feature_flags order by created_at asc, id asc");
+    return (result.rows as Record<string, unknown>[]).map(toFeatureFlag);
+  }
+
+  async findFeatureFlagById(flagId: string): Promise<PlatformFeatureFlag | null> {
+    await this.ensureSchema();
+    const result = await this.database.query("select * from feature_flags where id = $1 limit 1", [flagId]);
+    return result.rows[0] ? toFeatureFlag(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async findFeatureFlagByKey(key: string): Promise<PlatformFeatureFlag | null> {
+    await this.ensureSchema();
+    const result = await this.database.query("select * from feature_flags where key = $1 limit 1", [key]);
+    return result.rows[0] ? toFeatureFlag(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async updateFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `update feature_flags
+       set key = $2, description = $3, default_enabled = $4, updated_at = $5
+       where id = $1
+       returning *`,
+      [flag.id, flag.key, flag.description, flag.defaultEnabled, flag.updatedAt],
+    );
+    return toFeatureFlag(result.rows[0] as Record<string, unknown>);
+  }
+
+  async deleteFeatureFlag(flagId: string): Promise<void> {
+    await this.ensureSchema();
+    await this.database.query("delete from feature_flags where id = $1", [flagId]);
+  }
+
+  async listFeatureFlagTargets(flagId: string): Promise<PlatformFeatureFlagTarget[]> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      "select * from feature_flag_targets where flag_id = $1 order by created_at asc, id asc",
+      [flagId],
+    );
+    return (result.rows as Record<string, unknown>[]).map(toFeatureFlagTarget);
+  }
+
+  async setFeatureFlagTarget(target: PlatformFeatureFlagTarget): Promise<PlatformFeatureFlagTarget> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `insert into feature_flag_targets (
+        id,
+        flag_id,
+        audience_type,
+        audience_id,
+        enabled,
+        created_at
+      ) values ($1, $2, $3, $4, $5, $6)
+      on conflict (flag_id, audience_type, audience_id)
+      do update set enabled = excluded.enabled
+      returning *`,
+      [
+        target.id,
+        target.flagId,
+        target.audienceType,
+        target.audienceId,
+        target.enabled,
+        target.createdAt,
+      ],
+    );
+    return toFeatureFlagTarget(result.rows[0] as Record<string, unknown>);
+  }
+
+  async deleteFeatureFlagTarget(targetId: string): Promise<void> {
+    await this.ensureSchema();
+    await this.database.query("delete from feature_flag_targets where id = $1", [targetId]);
+  }
+
   private async ensureSchema(): Promise<void> {
     let schemaReady = schemaCache.get(this.database as object);
     if (!schemaReady) {
@@ -3069,6 +3274,27 @@ class PostgresStore {
         created_at text not null
       )
     `);
+    await this.database.query(`
+      create table if not exists feature_flags (
+        id text primary key,
+        key text not null unique,
+        description text not null default '',
+        default_enabled boolean not null default false,
+        created_at text not null,
+        updated_at text not null
+      )
+    `);
+    await this.database.query(`
+      create table if not exists feature_flag_targets (
+        id text primary key,
+        flag_id text not null references feature_flags (id) on delete cascade,
+        audience_type text not null check (audience_type in ('user', 'organization', 'role')),
+        audience_id text not null,
+        enabled boolean not null default false,
+        created_at text not null,
+        unique (flag_id, audience_type, audience_id)
+      )
+    `);
   }
 
   private async loadEngagementFromClient(
@@ -3312,6 +3538,42 @@ export class ApplicationStore {
 
   async createAgentExecutionRecord(record: PlatformAgentExecutionRecord): Promise<PlatformAgentExecutionRecord> {
     return this.driver.createAgentExecutionRecord(record);
+  }
+
+  async createFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    return this.driver.createFeatureFlag(flag);
+  }
+
+  async listFeatureFlags(): Promise<PlatformFeatureFlag[]> {
+    return this.driver.listFeatureFlags();
+  }
+
+  async findFeatureFlagById(flagId: string): Promise<PlatformFeatureFlag | null> {
+    return this.driver.findFeatureFlagById(flagId);
+  }
+
+  async findFeatureFlagByKey(key: string): Promise<PlatformFeatureFlag | null> {
+    return this.driver.findFeatureFlagByKey(key);
+  }
+
+  async updateFeatureFlag(flag: PlatformFeatureFlag): Promise<PlatformFeatureFlag> {
+    return this.driver.updateFeatureFlag(flag);
+  }
+
+  async deleteFeatureFlag(flagId: string): Promise<void> {
+    return this.driver.deleteFeatureFlag(flagId);
+  }
+
+  async listFeatureFlagTargets(flagId: string): Promise<PlatformFeatureFlagTarget[]> {
+    return this.driver.listFeatureFlagTargets(flagId);
+  }
+
+  async setFeatureFlagTarget(target: PlatformFeatureFlagTarget): Promise<PlatformFeatureFlagTarget> {
+    return this.driver.setFeatureFlagTarget(target);
+  }
+
+  async deleteFeatureFlagTarget(targetId: string): Promise<void> {
+    return this.driver.deleteFeatureFlagTarget(targetId);
   }
 
   async close(): Promise<void> {

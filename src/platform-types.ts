@@ -55,6 +55,7 @@ export type ResearchRunPhase =
   | "publishing"
   | "completed"
   | "failed";
+export type FeatureAudienceType = "user" | "organization" | "role";
 export type ResearchActivityKind = "status" | "tool" | "steering";
 export type ResearchActivityTone = "neutral" | "good" | "warn" | "bad";
 export type ResearchSteeringStatus = "queued" | "applied";
@@ -494,6 +495,24 @@ export interface PlatformAgentExecutionRecord {
   createdAt: string;
 }
 
+export interface PlatformFeatureFlag {
+  id: string;
+  key: string;
+  description: string;
+  defaultEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformFeatureFlagTarget {
+  id: string;
+  flagId: string;
+  audienceType: FeatureAudienceType;
+  audienceId: string;
+  enabled: boolean;
+  createdAt: string;
+}
+
 export interface PlatformState {
   users: PlatformUser[];
   organizations: PlatformOrganization[];
@@ -513,6 +532,8 @@ export interface PlatformState {
   proposalWorkspaces: PlatformProposalWorkspace[];
   agentProviderConnections: PlatformAgentProviderConnection[];
   agentExecutionRecords: PlatformAgentExecutionRecord[];
+  featureFlags: PlatformFeatureFlag[];
+  featureFlagTargets: PlatformFeatureFlagTarget[];
 }
 
 export interface PlatformSessionIdentity {
@@ -562,5 +583,7 @@ export function createEmptyPlatformState(): PlatformState {
     proposalWorkspaces: [],
     agentProviderConnections: [],
     agentExecutionRecords: [],
+    featureFlags: [],
+    featureFlagTargets: [],
   };
 }
