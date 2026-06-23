@@ -1,8 +1,8 @@
 ## 1. Feature flag persistence
 
-- [ ] 1.1 Add `PlatformFeatureFlag` and `PlatformFeatureFlagTarget` types and
+- [x] 1.1 Add `PlatformFeatureFlag` and `PlatformFeatureFlagTarget` types and
   extend `PlatformState` / `createEmptyPlatformState` in `src/platform-types.ts`
-- [ ] 1.2 Add `feature_flags` and `feature_flag_targets` schema to
+- [x] 1.2 Add `feature_flags` and `feature_flag_targets` schema to
   `bootstrapSchema` and implement create/list/update/delete + target read/write in
   both `MemoryStore` and `PostgresStore`, with a test asserting parity across both
   stores
