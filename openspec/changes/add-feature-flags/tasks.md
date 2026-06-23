@@ -33,7 +33,7 @@
 
 ## 5. Validation
 
-- [ ] 5.1 Add/extend tests for the administrator gate, evaluation precedence,
+- [x] 5.1 Add/extend tests for the administrator gate, evaluation precedence,
   store parity, and session resolution; ensure pristine test output
-- [ ] 5.2 Run `bun run check` and `openspec validate add-feature-flags --strict`,
+- [x] 5.2 Run `bun run check` and `openspec validate add-feature-flags --strict`,
   and verify the flagged-UI behavior in the browser
